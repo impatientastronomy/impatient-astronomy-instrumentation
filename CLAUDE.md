@@ -10,7 +10,7 @@ conversations about this repository. Update it as key decisions are made.
 - Electrical engineer with a background in camera design
 - Hobbyist astrophotographer and electronically assisted astronomy (EAA) enthusiast
 - Experienced in MATLAB for camera control and image processing; transitioning to Python
-- Primary development machine: Mac; target deployment platform: NVIDIA Jetson Nano (or similar)
+- Primary development machine: Mac; target deployment platform: Raspberry Pi 5 (or similar)
 - Goal: build open source astronomy instrumentation projects, share on GitHub, and enable
   community contributions
 
@@ -26,7 +26,7 @@ and are being developed by a single author at this stage.
 **Repo name:** `impatient-astronomy-instrumentation`
 **License:** TBD (MIT or GPL — to be decided)
 **Language:** Python (migrating from MATLAB)
-**Target platform:** NVIDIA Jetson Nano (ARM64, Linux, onboard GPU via CUDA)
+**Target platform:** Develop on Mac w/ Apple Silicon. Port over to Raspberry Pi 5
 **Python packaging:** `pyproject.toml` at repo root defining `astrocore` as a local package
 
 ---
@@ -52,7 +52,6 @@ contributors can swap in their own hardware drivers without touching higher-leve
 
 - Camera, mount, and display classes use abstract base classes (Python `abc` module) so
   hardware can be swapped without changing project-level code
-- GPU acceleration via OpenCV CUDA backend or `cupy` where beneficial on Jetson Nano
 - All modules should be independently testable with `pytest`
 
 ---
@@ -73,8 +72,8 @@ eyepiece, but with the benefit of long-exposure stacking revealing dim detail in
 - Similar in concept to the Pegasus Astro SmartEye
 
 ### Hardware
-- Camera(s) with USB connection to Jetson Nano
-- Jetson Nano drives HDMI display inside the eyepiece housing
+- Camera(s) with USB connection to Raspberry Pi
+- Raspberry Pi drives HDMI display inside the eyepiece housing
 - Optical eyepiece element over the display
 - Wireless mouse for user input (scroll wheel = zoom)
 - Physical enclosure: CAD files in `digital_eyepiece/hardware/cad/`
@@ -196,9 +195,9 @@ impatient-astronomy-instrumentation/
 
 | Date | Decision | Rationale |
 |---|---|---|
-| 2025-04 | Python over MATLAB | Free, runs on Jetson Nano, large astronomy ecosystem |
+| 2025-04 | Python over MATLAB | Free, runs on Raspberry Pi, large astronomy ecosystem |
 | 2025-04 | Monorepo | Single author, heavy code sharing, easy to split later if needed |
-| 2025-04 | Jetson Nano as target | Compact, inexpensive, GPU for image processing, mounts to telescope |
+| 2025-04 | Raspberry Pi as target | Compact, inexpensive, GPU for image processing, mounts to telescope |
 | 2025-04 | INDI for mount control | Open standard, cross-platform, broad mount support |
 | 2025-04 | Abstract base classes for hardware | Allows contributors to swap camera/mount without rewriting projects |
 
@@ -207,7 +206,6 @@ impatient-astronomy-instrumentation/
 ## Open questions / TODO
 
 - [ ] Choose license (MIT vs GPL)
-- [ ] Confirm Jetson Nano vs newer Jetson Orin Nano (better GPU performance)
 - [ ] Evaluate ZWO ASI SDK Python bindings vs `asi-python` community library
 - [ ] Decide on GUI framework for eyepiece UI (pygame? Qt? custom OpenGL?)
 - [ ] Detail the fourth project that `sky_survey` is intended to support

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(pytest astrocore/tests/test_camera_base.py astrocore/tests/test_frame_grabber.py astrocore/tests/test_meta.py -v)",
+      "Bash(python3 *)",
+      "Bash(pytest astrocore/tests/ -v -m \"not hardware\" --tb=no -q)"
+    ]
+  }
+}

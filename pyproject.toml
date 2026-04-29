@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "astrocore"
+version = "0.1.0"
+description = "Shared library for impatient-astronomy-instrumentation projects"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["astrocore*", "digital_eyepiece*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "hardware: tests that require a physical camera connected via USB",
+]

@@ -27,6 +27,7 @@ temperature drifts to a better match in the dark library.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
@@ -55,6 +56,7 @@ class GrabStatus(Enum):
 class GrabResult:
     status: GrabStatus
     frame: Frame | None = None
+    raw_frame: Frame | None = None   # pre-calibration; populated on SUCCESS
     message: str = ""
 
 
@@ -105,6 +107,7 @@ class FrameGrabber:
         self.imFlat: np.ndarray | int = 0
         self.imDPC: np.ndarray | int = 0
         self.current_dark: str = ""
+        self.current_dark_flip: int = 0  # flip int of the dark file currently in imDark
         self.dark_table: pd.DataFrame = pd.DataFrame()
 
     @property
@@ -193,7 +196,11 @@ class FrameGrabber:
             else:
                 imP = imR
 
-            return GrabResult(status=GrabStatus.SUCCESS, frame=Frame(data=imP, meta=meta))
+            return GrabResult(
+                status=GrabStatus.SUCCESS,
+                frame=Frame(data=imP, meta=meta),
+                raw_frame=raw_frame,
+            )
 
         return GrabResult(status=GrabStatus.FAILED, message="Unexpected exposure status.")
 
@@ -218,8 +225,10 @@ class FrameGrabber:
             self._ensure_dark_table()
             best = self._find_best_dark_row(meta)
             if best is not None and best["filename"] != self.current_dark:
-                self.imDark = _read_calibration(best["path"], meta, np.uint16)
+                raw = _read_calibration(best["path"], meta, np.uint16)
+                self.imDark = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
                 self.current_dark = best["filename"]
+                self.current_dark_flip = best["flip"]
                 self.imDPC = 0
             return _subtract_dark(imR, self.imDark)
 
@@ -227,9 +236,11 @@ class FrameGrabber:
         self._ensure_dark_table()
         best = self._find_best_dark_row(meta)
         if best is None:
-            return imR
-        self.imDark = _read_calibration(best["path"], meta, np.uint16)
+            _exit_missing_cal("dark", self.cal_path, meta)
+        raw = _read_calibration(best["path"], meta, np.uint16)
+        self.imDark = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
         self.current_dark = best["filename"]
+        self.current_dark_flip = best["flip"]
         self.imDPC = 0
         return _subtract_dark(imR, self.imDark)
 
@@ -240,7 +251,7 @@ class FrameGrabber:
                 return imR
             dpc_path = Path(self.cal_path) / "DPC" / self.current_dark
             raw = _read_calibration(dpc_path, meta, np.uint8)
-            mask = raw.astype(bool)
+            mask = _apply_flip_correction(raw, self.current_dark_flip, _flip_int(meta)).astype(bool)
             # Zero the 2-pixel border so 2nd-neighbor lookups are always in bounds
             mask[:2, :]  = False
             mask[-2:, :] = False
@@ -251,18 +262,21 @@ class FrameGrabber:
         return _fix_dead_pixels_mask(imR, self.imDPC)
 
     def _pipeline_flat(self, imR: np.ndarray, meta) -> np.ndarray:
-        """Lazy-load matching flat (camera + filter) and apply per-pixel scaling."""
+        """Lazy-load matching flat (camera + filter + bin) and apply per-pixel scaling."""
         if not _is_array(self.imFlat):
             if self.cal_path is None:
-                return imR
+                _exit_missing_cal("flat", self.cal_path, meta)
             flat_table = scan_folder(Path(self.cal_path) / "flats")
             matching = flat_table[
                 (flat_table.camera_id == meta.camera_id) &
-                (flat_table.filter_name == meta.Filter)
+                (flat_table.filter_id == meta.filter_id) &
+                (flat_table["bin"] == meta.binning)
             ]
             if len(matching) == 0:
-                return imR
-            self.imFlat = _read_calibration(matching.iloc[0]["path"], meta, np.float32)
+                _exit_missing_cal("flat", self.cal_path, meta)
+            best = matching.iloc[0]
+            raw = _read_calibration(best["path"], meta, np.float32)
+            self.imFlat = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
 
         return _apply_flat_field(imR, self.imFlat)
 
@@ -276,10 +290,14 @@ class FrameGrabber:
         if len(self.dark_table) == 0:
             return None
         science_us = round(meta.exposure_seconds * 1_000_000)
-        candidates = self.dark_table[
+        base = (
             (self.dark_table.camera_id == meta.camera_id) &
-            (self.dark_table.exposure_us == science_us)
-        ]
+            (self.dark_table["bin"] == meta.binning)
+        )
+        candidates = self.dark_table[base & (self.dark_table.exposure_us == science_us)]
+        if len(candidates) == 0:
+            # Fallback: use 100µs bias-style dark with matching camera/bin
+            candidates = self.dark_table[base & (self.dark_table.exposure_us == 100)]
         if len(candidates) == 0:
             return None
         if meta.temperature_c is not None and not candidates.temperature_c.isna().all():
@@ -401,3 +419,52 @@ def _is_array(arr) -> bool:
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+_FLIP_STR_TO_INT: dict[str, int] = {"NONE": 0, "HORIZ": 1, "VERT": 2, "BOTH": 3}
+
+
+def _flip_int(meta) -> int:
+    """Return the flip setting from FrameMeta as an integer (0–3)."""
+    return _FLIP_STR_TO_INT.get(meta.flip or "NONE", 0)
+
+
+def _apply_flip_correction(data: np.ndarray, cal_flip: int, cam_flip: int) -> np.ndarray:
+    """
+    Flip cal data so its orientation matches the camera's current flip setting.
+
+    Uses XOR of the two flip integers: each bit represents an axis
+    (bit 0 = horizontal, bit 1 = vertical).  The correction is applied
+    in-place on a copy.
+    """
+    correction = int(cal_flip) ^ int(cam_flip)
+    if correction == 0:
+        return data
+    result = data.copy()
+    if correction & 1:
+        result = np.fliplr(result)
+    if correction & 2:
+        result = np.flipud(result)
+    return result
+
+
+def _exit_missing_cal(kind: str, cal_path, meta) -> None:
+    """Print a descriptive error and terminate the process."""
+    folder = Path(cal_path) / f"{kind}s" if cal_path else "<cal_path not set>"
+    if kind == "dark":
+        science_us = round(meta.exposure_seconds * 1_000_000)
+        pattern = (
+            f"Cam{meta.camera_id}Bin{meta.binning}Flip*Filt*_{science_us}us_*C_*.tif"
+            f"  (or 100us fallback)"
+        )
+    else:
+        pattern = (
+            f"Cam{meta.camera_id}Bin{meta.binning}Flip*Filt{meta.filter_id}_*us_*C_*.tif"
+        )
+    print(
+        f"\nCalibration error: no {kind} file found.\n"
+        f"  Folder  : {folder}\n"
+        f"  Pattern : {pattern}",
+        file=sys.stderr,
+    )
+    sys.exit(1)

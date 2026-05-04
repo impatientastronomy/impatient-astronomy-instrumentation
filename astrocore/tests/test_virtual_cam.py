@@ -28,10 +28,10 @@ def _write_frame(folder: Path, name: str, shape=(64, 64), value=1000):
 
 def _populate(folder: Path):
     """Write a small library of canonical-named frames."""
-    _write_frame(folder, "C3_Ha_2e6us_20C_001.tif", value=100)
-    _write_frame(folder, "C3_Ha_2e6us_20C_002.tif", value=200)
-    _write_frame(folder, "C3_Ha_2e6us_20C_003.tif", value=300)
-    _write_frame(folder, "C3_Ha_1e6us_20C_001.tif", value=400)   # different exposure
+    _write_frame(folder, "Cam3Bin1Flip0Filt3_2e6us_20C_001.tif", value=100)
+    _write_frame(folder, "Cam3Bin1Flip0Filt3_2e6us_20C_002.tif", value=200)
+    _write_frame(folder, "Cam3Bin1Flip0Filt3_2e6us_20C_003.tif", value=300)
+    _write_frame(folder, "Cam3Bin1Flip0Filt3_1e6us_20C_001.tif", value=400)   # different exposure
 
 
 @pytest.fixture
@@ -57,8 +57,8 @@ class TestConnection:
         assert len(cam._file_table) == 4
 
     def test_connect_filters_by_camera_id(self, tmp_path):
-        _write_frame(tmp_path, "C1_Ha_2e6us_20C_001.tif")
-        _write_frame(tmp_path, "C3_Ha_2e6us_20C_001.tif")
+        _write_frame(tmp_path, "Cam1Bin1Flip0Filt3_2e6us_20C_001.tif")
+        _write_frame(tmp_path, "Cam3Bin1Flip0Filt3_2e6us_20C_001.tif")
         with VirtualCamera(tmp_path, camera_id=1) as c:
             assert all(c._file_table.camera_id == 1)
 
@@ -198,8 +198,14 @@ class TestReadFrame:
         frame = cam.read_frame()
         assert frame.meta.temperature_c == pytest.approx(20.0)
 
+    def test_frame_meta_filter_id_from_filename(self, cam):
+        cam.exposure_time = 2.0
+        cam._t_exp = time.monotonic() - 1
+        frame = cam.read_frame()
+        assert frame.meta.filter_id == 3   # Filt3 = Ha
+
     def test_frame_meta_unknown_temperature_is_none(self, tmp_path):
-        _write_frame(tmp_path, "C3_Ha_2e6us_unkC_001.tif")
+        _write_frame(tmp_path, "Cam3Bin1Flip0Filt3_2e6us_unkC_001.tif")
         with VirtualCamera(tmp_path, camera_id=3, t_accel=1_000_000) as c:
             c._t_exp = time.monotonic() - 1
             frame = c.read_frame()

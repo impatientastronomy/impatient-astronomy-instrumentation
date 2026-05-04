@@ -86,6 +86,7 @@ class VirtualCamera(Camera):
 
         self._file_table: pd.DataFrame = pd.DataFrame()
         self._frame_cursor: int = 0
+        self._prev_exposure_us: int | None = None
         self._t_exp: float = float("inf")   # monotonic time when exposure completes
         self._image_shape: tuple = (0, 0)
         self._camera_id: int = camera_id or 0
@@ -119,12 +120,14 @@ class VirtualCamera(Camera):
         self._image_shape = first.shape
 
         self._frame_cursor = 0
+        self._prev_exposure_us = None
         self._t_exp = float("inf")
         self._connected = True
 
     def disconnect(self) -> None:
         self._file_table = pd.DataFrame()
         self._frame_cursor = 0
+        self._prev_exposure_us = None
         self._t_exp = float("inf")
         self.meta = PersistentMeta()
         self._connected = False
@@ -169,7 +172,12 @@ class VirtualCamera(Camera):
         if len(matching) == 0:
             matching = self._file_table
 
-        row = matching.iloc[self._frame_cursor % len(matching)].to_dict()
+        # Reset cursor when exposure changes or when past end of the matching set
+        if exp_us != self._prev_exposure_us or self._frame_cursor >= len(matching):
+            self._frame_cursor = 0
+        self._prev_exposure_us = exp_us
+
+        row = matching.iloc[self._frame_cursor].to_dict()
         self._frame_cursor += 1
 
         import tifffile
@@ -197,8 +205,9 @@ class VirtualCamera(Camera):
             binning=1,
             temperature_c=temp,
             bayer_pattern=self._bayer_pattern,
-            Filter=str(row["filter_name"]),
-            FOV=self.meta.FOV,
+            filter_id=int(row["filter_id"]),
+            telescope_description=self.meta.telescope_description,
+            focal_length_mm=self.meta.focal_length_mm,
             RA=self.meta.RA,
             Dec=self.meta.Dec,
             Lat=self.meta.Lat,

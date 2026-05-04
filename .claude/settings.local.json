@@ -4,7 +4,13 @@
       "Bash(pip install *)",
       "Bash(pytest astrocore/tests/test_camera_base.py astrocore/tests/test_frame_grabber.py astrocore/tests/test_meta.py -v)",
       "Bash(python3 *)",
-      "Bash(pytest astrocore/tests/ -v -m \"not hardware\" --tb=no -q)"
+      "Bash(pytest astrocore/tests/ -v -m \"not hardware\" --tb=no -q)",
+      "Bash(.venv/bin/pytest astrocore/tests/ -v)",
+      "Bash(.venv/bin/pytest astrocore/tests/test_zwo_asi.py -v)",
+      "Bash(python -m pytest astrocore/tests/ -x -q)",
+      "Bash(uv *)",
+      "Bash(unset ASI_LIB)",
+      "Bash(python *)"
     ]
   }
 }

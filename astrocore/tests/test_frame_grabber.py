@@ -43,7 +43,7 @@ def _make_meta(exposure_seconds: float = 2.0, temperature_c: float = 20.0) -> Fr
         offset=10,
         binning=1,
         temperature_c=temperature_c,
-        Filter="Ha",
+        filter_id=3,
     )
 
 
@@ -234,13 +234,12 @@ class TestDarkPipelineIntegration:
         # FakeCamera returns 1000; dark is 200 → expected 800
         assert result.frame.data[0, 0] == 800
 
-    def test_no_dark_when_table_empty_and_no_cal_path(self, grabber, camera):
+    def test_exits_when_no_dark_found(self, grabber, camera):
         camera.set_status(ExposureStatus.IDLE)
         grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
         camera.set_status(ExposureStatus.SUCCESS)
-        result = grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
-        assert result.status == GrabStatus.SUCCESS
-        assert result.frame.data[0, 0] == 1000   # unchanged
+        with pytest.raises(SystemExit):
+            grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
 
 
 # ---------------------------------------------------------------------------
@@ -258,13 +257,12 @@ class TestFlatPipelineIntegration:
         # FakeCamera returns 1000; imFlat=2000 → 1000 * 2000/1000 = 2000
         assert result.frame.data[0, 0] == 2000
 
-    def test_no_flat_when_no_cal_path(self, grabber, camera):
+    def test_exits_when_no_flat_found(self, grabber, camera):
         camera.set_status(ExposureStatus.IDLE)
         grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
         camera.set_status(ExposureStatus.SUCCESS)
-        result = grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
-        assert result.status == GrabStatus.SUCCESS
-        assert result.frame.data[0, 0] == 1000   # unchanged
+        with pytest.raises(SystemExit):
+            grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
 
 
 # ---------------------------------------------------------------------------
@@ -405,31 +403,46 @@ class TestFindBestDarkRow:
 
     def _make_dark_table(self, rows):
         return pd.DataFrame(rows, columns=[
-            "filename", "path", "camera_id", "filter_name",
+            "filename", "path", "camera_id", "bin", "flip",
             "exposure_us", "exposure_s", "temperature_c", "frame_index",
         ])
 
     def test_returns_none_when_table_empty(self, grabber):
         assert grabber._find_best_dark_row(self._meta()) is None
 
-    def test_matches_camera_and_exposure(self, grabber):
+    def test_matches_camera_bin_and_exposure(self, grabber):
         grabber.dark_table = self._make_dark_table([
-            ("C1_Ha_2e6us_20C_001.tif", None, 1, "Ha", 2_000_000, 2.0, 20.0, 1),
-            ("C2_Ha_2e6us_20C_001.tif", None, 2, "Ha", 2_000_000, 2.0, 20.0, 1),
+            ("Cam1Bin1Flip0Filt0_2e6us_20C_001.tif", None, 1, 1, 0, 2_000_000, 2.0, 20.0, 1),
+            ("Cam2Bin1Flip0Filt0_2e6us_20C_001.tif", None, 2, 1, 0, 2_000_000, 2.0, 20.0, 1),
         ])
-        result = grabber._find_best_dark_row(self._meta(camera_id=1))
-        assert result["filename"] == "C1_Ha_2e6us_20C_001.tif"
+        result = grabber._find_best_dark_row(self._meta())
+        assert result["filename"] == "Cam1Bin1Flip0Filt0_2e6us_20C_001.tif"
+
+    def test_bin_mismatch_returns_none(self, grabber):
+        grabber.dark_table = self._make_dark_table([
+            ("Cam1Bin2Flip0Filt0_2e6us_20C_001.tif", None, 1, 2, 0, 2_000_000, 2.0, 20.0, 1),
+        ])
+        # meta has binning=1, table has bin=2 → no match
+        assert grabber._find_best_dark_row(self._meta()) is None
 
     def test_selects_closest_temperature(self, grabber):
         grabber.dark_table = self._make_dark_table([
-            ("C1_Ha_2e6us_18C_001.tif", None, 1, "Ha", 2_000_000, 2.0, 18.0, 1),
-            ("C1_Ha_2e6us_22C_001.tif", None, 1, "Ha", 2_000_000, 2.0, 22.0, 2),
+            ("Cam1Bin1Flip0Filt0_2e6us_18C_001.tif", None, 1, 1, 0, 2_000_000, 2.0, 18.0, 1),
+            ("Cam1Bin1Flip0Filt0_2e6us_22C_001.tif", None, 1, 1, 0, 2_000_000, 2.0, 22.0, 2),
         ])
         result = grabber._find_best_dark_row(self._meta(temperature_c=21.0))
-        assert result["filename"] == "C1_Ha_2e6us_22C_001.tif"
+        assert result["filename"] == "Cam1Bin1Flip0Filt0_2e6us_22C_001.tif"
 
-    def test_returns_none_for_wrong_exposure(self, grabber):
+    def test_falls_back_to_100us_dark(self, grabber):
         grabber.dark_table = self._make_dark_table([
-            ("C1_Ha_1e6us_20C_001.tif", None, 1, "Ha", 1_000_000, 1.0, 20.0, 1),
+            ("Cam1Bin1Flip0Filt0_100us_20C_001.tif", None, 1, 1, 0, 100, 0.0001, 20.0, 1),
+        ])
+        # Science exposure is 2s, no match → falls back to 100µs bias dark
+        result = grabber._find_best_dark_row(self._meta(exposure_s=2.0))
+        assert result["filename"] == "Cam1Bin1Flip0Filt0_100us_20C_001.tif"
+
+    def test_returns_none_for_wrong_exposure_and_no_100us(self, grabber):
+        grabber.dark_table = self._make_dark_table([
+            ("Cam1Bin1Flip0Filt0_1e6us_20C_001.tif", None, 1, 1, 0, 1_000_000, 1.0, 20.0, 1),
         ])
         assert grabber._find_best_dark_row(self._meta(exposure_s=2.0)) is None

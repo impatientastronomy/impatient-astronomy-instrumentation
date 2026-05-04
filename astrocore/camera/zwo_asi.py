@@ -28,16 +28,31 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+import logging
+
 import numpy as np
 
 try:
-    import zwoasi as asi
+    # zwoasi calls ctypes.find_library('ASICamera2') at import time and logs a
+    # root-level warning when it can't auto-detect the library. We load it
+    # explicitly via _init_sdk(), so suppress that specific spurious message.
+    class _SuppressAsiImportWarning(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "ASI SDK library not found" not in record.getMessage()
+
+    _f = _SuppressAsiImportWarning()
+    logging.getLogger().addFilter(_f)
+    try:
+        import zwoasi as asi
+    finally:
+        logging.getLogger().removeFilter(_f)
+    del _f, _SuppressAsiImportWarning
+
 except ImportError as exc:
     raise ImportError(
         "zwoasi package not found. Install with: pip install zwoasi"
     ) from exc
 
-from ..config import camera_config as _cam_cfg
 from .base import (
     Camera,
     CameraError,
@@ -202,7 +217,6 @@ class ZwoAsiCamera(Camera):
             self._cam.set_control_value(asi.ASI_EXPOSURE, 100_000)  # 0.1 s default
             self._info = self._build_info()
             self._connected = True
-            self._apply_camera_config()
         except asi.ZWO_Error as exc:
             raise ConnectionError(
                 f"Failed to connect to ASI camera {self._index}: {exc}"
@@ -624,32 +638,14 @@ class ZwoAsiCamera(Camera):
             roi_width=roi_w,
             roi_height=roi_h,
             flip=FlipMode(flip_val).name,
-            FOV=self.meta.FOV,
+            telescope_description=self.meta.telescope_description,
+            focal_length_mm=self.meta.focal_length_mm,
             RA=self.meta.RA,
             Dec=self.meta.Dec,
             Lat=self.meta.Lat,
             Lon=self.meta.Lon,
-            Filter=self.meta.Filter,
+            filter_id=self.meta.filter_id,
         )
-
-    def _apply_camera_config(self) -> None:
-        """Apply gain, offset, pattern, and flip from cameras.yaml if present."""
-        assert self._info is not None
-        try:
-            cfg = _cam_cfg.load()
-        except FileNotFoundError:
-            return   # no config file — silently skip
-        settings = cfg.resolve(self._info.model, self._info.camera_id)
-        if settings.gain is not None:
-            self.gain = settings.gain
-        if settings.offset is not None:
-            self.offset = settings.offset
-        if settings.flip is not None:
-            self.flip = FlipMode[settings.flip]
-        # Store pattern on info so FrameGrabber can pick it up via cam.info.bayer_pattern
-        if settings.pattern is not None:
-            from dataclasses import replace as _replace
-            self._info = _replace(self._info, bayer_pattern=settings.pattern)
 
     def _current_binning(self) -> int:
         assert self._cam is not None

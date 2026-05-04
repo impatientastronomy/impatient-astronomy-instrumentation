@@ -70,16 +70,17 @@ class PersistentMeta:
     """
     Observation context that persists on a camera instance across frames.
 
-    Set fields directly on the camera (cam.meta.FOV = 2.3) and they will
-    appear in the metadata of every subsequent frame until changed.
+    Set these once after connecting and loading configuration; they are
+    stamped onto every subsequent frame until changed.
     Cleared automatically when the camera is disconnected.
     """
-    FOV:    float = 0.0    # field of view in degrees
-    RA:     float = 0.0    # right ascension in degrees
-    Dec:    float = 0.0    # declination in degrees
-    Lat:    float = 0.0    # observer latitude in degrees
-    Lon:    float = 0.0    # observer longitude in degrees
-    Filter: str   = "none"
+    telescope_description: str   = ""
+    focal_length_mm:       float = 0.0
+    RA:        float = 0.0    # right ascension in degrees
+    Dec:       float = 0.0    # declination in degrees
+    Lat:       float = 0.0    # observer latitude in degrees
+    Lon:       float = 0.0    # observer longitude in degrees
+    filter_id: int   = 0      # filter wheel position (0 = none)
 
 
 @dataclass
@@ -109,12 +110,13 @@ class FrameMeta:
     roi_width: int | None = None
     roi_height: int | None = None
     flip: str | None = None
-    FOV:    float = 0.0
-    RA:     float = 0.0
-    Dec:    float = 0.0
-    Lat:    float = 0.0
-    Lon:    float = 0.0
-    Filter: str   = "none"
+    telescope_description: str   = ""
+    focal_length_mm:       float = 0.0
+    RA:        float = 0.0
+    Dec:       float = 0.0
+    Lat:       float = 0.0
+    Lon:       float = 0.0
+    filter_id: int   = 0
     extras: dict = field(default_factory=dict)
 
 

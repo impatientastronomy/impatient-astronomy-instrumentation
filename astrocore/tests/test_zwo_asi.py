@@ -70,8 +70,9 @@ def _make_mock_sdk(
     eeprom[7] = camera_id
     mock_cam = MagicMock()
     mock_cam.get_camera_property.return_value = cam_props
-    mock_cam.get_roi.return_value = (width, height, 1, sdk.ASI_IMG_RAW16)
-    mock_cam.get_start_pos.return_value = (0, 0)
+    mock_cam.get_roi.return_value = (0, 0, width, height)           # (x, y, w, h)
+    mock_cam.get_roi_format.return_value = (width, height, 1, sdk.ASI_IMG_RAW16)  # (w, h, bins, type)
+    mock_cam.get_roi_start_position.return_value = (0, 0)
     mock_cam.get_exposure_status.return_value = sdk.ASI_EXP_SUCCESS
     mock_cam.get_data_after_exposure.return_value = np.zeros((height, width), dtype=np.uint16)
     mock_cam.get_id.return_value = bytes(eeprom)
@@ -146,13 +147,14 @@ class TestConnect:
 
     def test_missing_lib_raises(self):
         # Test _init_sdk in isolation — no mock fixture needed.
-        from astrocore.camera.zwo_asi import _init_sdk
+        import astrocore.camera.zwo_asi as zwo_module
         from astrocore.camera.base import CameraError
         import os
-        env = {k: v for k, v in os.environ.items() if k != "ASI_LIB"}
-        with patch.dict("os.environ", env, clear=True):
+        env = {k: v for k, v in os.environ.items() if k not in ("ASI_LIB", "ASI_SDK_PATH")}
+        with patch.dict("os.environ", env, clear=True), \
+             patch.object(zwo_module, "_find_asi_library", return_value=None):
             with pytest.raises(CameraError, match="ASI_LIB"):
-                _init_sdk(None)
+                zwo_module._init_sdk(None)
 
     def test_context_manager_disconnects(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
@@ -508,18 +510,21 @@ class TestPersistentMeta:
         module, _, _ = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             frame = self._grab_frame(cam, module)
-        assert frame.meta.FOV == 0.0
+        assert frame.meta.focal_length_mm == 0.0
+        assert frame.meta.telescope_description == ""
         assert frame.meta.RA  == 0.0
         assert frame.meta.Dec == 0.0
         assert frame.meta.Lat == 0.0
         assert frame.meta.Lon == 0.0
 
-    def test_set_fov_appears_in_frame(self, mock_sdk_and_cam):
+    def test_set_focal_length_appears_in_frame(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
-            cam.meta.FOV = 2.3
+            cam.meta.focal_length_mm = 600.0
+            cam.meta.telescope_description = "Vixen_600mm"
             frame = self._grab_frame(cam, module)
-        assert frame.meta.FOV == 2.3
+        assert frame.meta.focal_length_mm == 600.0
+        assert frame.meta.telescope_description == "Vixen_600mm"
 
     def test_meta_persists_across_multiple_frames(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
@@ -534,34 +539,34 @@ class TestPersistentMeta:
     def test_meta_update_reflected_in_next_frame(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
-            cam.meta.FOV = 1.0
+            cam.meta.focal_length_mm = 600.0
             f1 = self._grab_frame(cam, module)
-            cam.meta.FOV = 2.0
+            cam.meta.focal_length_mm = 2000.0
             f2 = self._grab_frame(cam, module)
-        assert f1.meta.FOV == 1.0
-        assert f2.meta.FOV == 2.0
+        assert f1.meta.focal_length_mm == 600.0
+        assert f2.meta.focal_length_mm == 2000.0
 
-    def test_filter_default_is_none_string(self, mock_sdk_and_cam):
+    def test_filter_id_default_is_zero(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             frame = self._grab_frame(cam, module)
-        assert frame.meta.Filter == "none"
+        assert frame.meta.filter_id == 0
 
-    def test_set_filter_appears_in_frame(self, mock_sdk_and_cam):
+    def test_set_filter_id_appears_in_frame(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
-            cam.meta.Filter = "Ha"
+            cam.meta.filter_id = 3   # Ha
             frame = self._grab_frame(cam, module)
-        assert frame.meta.Filter == "Ha"
+        assert frame.meta.filter_id == 3
 
     def test_disconnect_clears_meta(self, mock_sdk_and_cam):
         module, _, _ = mock_sdk_and_cam
         cam = module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib")
         cam.connect()
-        cam.meta.FOV = 2.3
+        cam.meta.focal_length_mm = 600.0
         cam.meta.Lat = 37.77
         cam.disconnect()
-        assert cam.meta.FOV == 0.0
+        assert cam.meta.focal_length_mm == 0.0
         assert cam.meta.Lat == 0.0
 
 
@@ -599,8 +604,7 @@ class TestListCameras:
 class TestRoiAndFlip:
     def test_get_roi_returns_x_y_width_height(self, mock_sdk_and_cam):
         module, _, mock_cam = mock_sdk_and_cam
-        mock_cam.get_roi.return_value = (800, 600, 1, 2)
-        mock_cam.get_start_pos.return_value = (100, 50)
+        mock_cam.get_roi.return_value = (100, 50, 800, 600)
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             x, y, w, h = cam.get_roi()
         assert (x, y, w, h) == (100, 50, 800, 600)
@@ -610,14 +614,14 @@ class TestRoiAndFlip:
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             cam.set_roi(x=10, y=20, width=800, height=600)
         mock_cam.set_roi.assert_called_with(width=800, height=600, bins=1)
-        mock_cam.set_start_pos.assert_called_with(10, 20)
+        mock_cam.set_roi_start_position.assert_called_with(10, 20)
 
     def test_set_roi_defaults_to_full_sensor(self, mock_sdk_and_cam):
         module, _, mock_cam = mock_sdk_and_cam
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             cam.set_roi()
         mock_cam.set_roi.assert_called_with(width=4144, height=2822, bins=1)
-        mock_cam.set_start_pos.assert_called_with(0, 0)
+        mock_cam.set_roi_start_position.assert_called_with(0, 0)
 
     def test_set_roi_with_explicit_bin(self, mock_sdk_and_cam):
         module, _, mock_cam = mock_sdk_and_cam
@@ -640,8 +644,8 @@ class TestRoiAndFlip:
 
     def test_read_frame_meta_includes_roi_and_flip(self, mock_sdk_and_cam):
         module, _, mock_cam = mock_sdk_and_cam
-        mock_cam.get_roi.return_value = (800, 600, 1, 2)
-        mock_cam.get_start_pos.return_value = (100, 50)
+        mock_cam.get_roi.return_value = (100, 50, 800, 600)
+        mock_cam.get_roi_format.return_value = (800, 600, 1, 2)
         mock_cam.get_data_after_exposure.return_value = np.zeros((600, 800), dtype=np.uint16)
         with module.ZwoAsiCamera(index=0, library_path="/fake/lib.dylib") as cam:
             cam.start_exposure()
@@ -724,9 +728,10 @@ class TestHardware:
 
     def test_short_exposure(self, lib_path):
         from astrocore.camera.zwo_asi import ZwoAsiCamera
-        from astrocore.camera.base import ExposureParams
         with ZwoAsiCamera(index=0, library_path=lib_path) as cam:
-            frame = cam.expose(ExposureParams(exposure_seconds=0.1, gain=100))
+            cam.exposure_time = 0.1
+            cam.gain = 100
+            frame = cam.expose()
         assert frame.data is not None
         assert frame.meta.camera_id >= 0
         print(f"\nFrame shape: {frame.data.shape}, camera_id: {frame.meta.camera_id}")

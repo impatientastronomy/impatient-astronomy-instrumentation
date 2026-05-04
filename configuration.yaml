@@ -1,0 +1,99 @@
+# Digital_eyepiece configuration
+#
+
+# Default location, used if system is unable to determine location
+latitude: 38.44  
+longitude: -122.71 
+
+# Filter number is encoded in filenames and camera metadata. Modify for your purposes. 
+# These do not need to be in numerical order. First one is default.
+filters:
+  0: none
+  1: luminance
+  2: UHC
+  3: Ha
+  4: SII
+  5: OIII
+
+# Path to camera calibration data
+# This path should have the following subfolders: Darks, Flats, DPC
+
+# Each Dark folder contains UINT16 images at various combinations of camera, exposure time, temperature, and bin
+# Optionally Darks and  may contain other subfolders if, for example, dark frames were recorded on different dates
+
+# Each Flats folder contains UINT16 images at various combinations of camera, filter, and bin.
+# Each file is an image with per-pixel scaling, normalized to 1000, intended to adjust raw images for shading and nonuniformity.
+# Optionally, Flats may contain subfolders for different telescopes.
+
+# Each DPC folder contains binary images indicating especially bright, unstable, or troublesome pixels.
+# Folder setup and naming is otherwise same as the Dark folder.
+cal_path: /Users/jasonhome/Local Astro/ImpatientAstronomy/Cals  
+record_path: /Users/jasonhome/Local Astro/ImpatientAstronomy/Sessions
+
+# Eyepiece may be connected to one or more cameras, listed according to ID, which is stored in camera EEPROM.
+# IDs do not need to be in numeric order. 
+# Each camera may be connected to one of several telescopes. 
+# Therefore, each camera may have multiple configs. The first config for each camera is default
+
+preferred_camera_id: 3 # If multiple cameras are connected, the system will display this one first
+cameras:
+  ID: 3
+  config 1:
+    # Telescope parameters
+    telescope_description: Vixen_600mm # Typically name of telescope associated with this config
+    focal_length_mm: 600 # You may need to tweak this if the map overlay doesn't match
+    mount_driver: zwo_am5 # Must match the python module name for connecting to the mount 
+    mount_type: Alt-Az # Must be Alt-Az or Equatorial
+
+    # Camera parameters
+    gain: 139 # Camera gain
+    offset: 21 # Camera offset
+    # pattern is the demosic code applied in processing, which may be different from the physical sensor
+    pattern: GBRG # NONE, RGGB, BGGR, GRBG, or GBRG
+    bin: 1
+    # flip affects the order of sensor readout
+    flip: 0 # 0-3, corresponding to NONE, HORIZ, VERT, or BOTH
+    image_width: 3520 # if -1, will use sensor max
+    image_height: 3520 # if -1, will use sensor max
+    x_offset: -1 # Starting readout position, zero indexed. Auto center if -1
+    y_offset: -1 # Starting readout position, zero indexed. Auto center if -1
+
+    # Display parameters
+    overlay_style: style1 # see overlay_style.yaml for style definition
+    overlay_flip: 0 # map overlay, 0-3, corresponding to NONE, HORIZ, VERT, or BOTH
+    # image_rotation applies to camera image, is useful for aligning multiple cameras or overlay. 
+    image_rotation: 0 # Nominally set to or near zero. Big rotations are more efficiently handled with flip.
+    
+  config 2:
+    # Telescope parameters
+    telescope_description: SCT_2000 # Typically name of telescope associated with this config
+    focal_length_mm: 2000 # You may need to tweak this if the map overlay doesn't match
+    mount_driver: zwo_am5 # Must match the python module name for connecting to the mount 
+    mount_type: Alt-Az # Must be Alt-Az or Equatorial
+
+    # Camera parameters
+    gain: 139 # Camera gain
+    offset: 21 # Camera offset
+    # pattern is the demosic code applied in processing, which may be different from the physical sensor
+    pattern: GBRG # NONE, RGGB, BGGR, GRBG, or GBRG
+    bin: 1
+    # flip affects the order of sensor readout
+    flip: 0 # 0-3, corresponding to NONE, HORIZ, VERT, or BOTH
+    image_width: 3520 # if -1, will use sensor max
+    image_height: 3520 # if -1, will use sensor max
+    x_offset: -1 # Starting readout position, zero indexed. Auto center if -1
+    y_offset: -1 # Starting readout position, zero indexed. Auto center if -1
+
+    # Display parameters
+    overlay_style: style1 # see overlay_style.yaml for style definition
+    overlay_flip: 0 # map overlay, 0-3, corresponding to NONE, HORIZ, VERT, or BOTH
+    # image_rotation applies to camera image, is useful for aligning multiple cameras or overlay. 
+    image_rotation: 0 # Nominally set to or near zero. Big rotations are more efficiently handled with flip.  
+    
+
+    
+
+    
+
+
+

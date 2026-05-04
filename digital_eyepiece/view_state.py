@@ -47,3 +47,4 @@ class ViewState:
     overlay_zoom: float = 1.0
     mount_connected: bool = False
     all_sky_mode: bool = False
+    recording: bool = False

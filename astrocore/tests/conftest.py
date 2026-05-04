@@ -17,4 +17,9 @@ def pytest_addoption(parser):
 @pytest.fixture
 def lib_path(request):
     import os
-    return request.config.getoption("--lib") or os.environ.get("ASI_LIB")
+    from astrocore.camera.zwo_asi import _find_asi_library
+    return (
+        request.config.getoption("--lib")
+        or os.environ.get("ASI_LIB")
+        or _find_asi_library()
+    )

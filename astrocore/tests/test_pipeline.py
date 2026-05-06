@@ -377,15 +377,18 @@ class TestStreamExposure:
     def test_update_decreases_on_high_saturation(self):
         ae = StreamExposure()
         img = np.full((100, 100), 65100, dtype=np.uint16)  # all pixels saturating
-        changed = ae.update(img)
-        assert changed is True
+        # hysteresis requires 3 consecutive frames before stepping
+        assert ae.update(img) is False
+        assert ae.update(img) is False
+        assert ae.update(img) is True
         assert ae.current < 0.1
 
     def test_update_increases_on_low_saturation(self):
         ae = StreamExposure(start=0.01)
         img = np.zeros((100, 100), dtype=np.uint16)  # no saturation
-        changed = ae.update(img)
-        assert changed is True
+        assert ae.update(img) is False
+        assert ae.update(img) is False
+        assert ae.update(img) is True
         assert ae.current > 0.01
 
     def test_update_no_change_in_band(self):

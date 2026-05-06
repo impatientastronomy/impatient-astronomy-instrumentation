@@ -47,7 +47,7 @@ from digital_eyepiece.display import stretch_to_uint8, to_surface
 from digital_eyepiece.input.dispatcher import InputDispatcher
 from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
-from digital_eyepiece.view_state import ViewMode, ViewState
+from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
 _CATALOG_PATH = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
 
@@ -69,6 +69,8 @@ WINDOW_TITLE      = "Digital Eyepiece"
 TARGET_FPS        = 60
 CURSOR_HIDE_DELAY = 5.0
 ALERT_DURATION    = 3.0
+
+FOCUS_ROI_HALF = 100   # half-width of the 200×200 focus patch
 
 GREEN  = (0, 220, 0)
 WHITE  = (220, 220, 220)
@@ -172,6 +174,13 @@ def _render_hud(surface: pygame.Surface, text: str) -> None:
     font  = pygame.font.SysFont("monospace", 18)
     label = font.render(text, True, GREEN)
     surface.blit(label, (8, 8))
+
+
+def _render_focus_waiting(surface: pygame.Surface) -> None:
+    font  = pygame.font.SysFont("monospace", 22)
+    label = font.render("FOCUS — click to set point", True, GREEN)
+    x = surface.get_width() // 2 - label.get_width() // 2
+    surface.blit(label, (x, 8))
 
 
 def _render_recording(surface: pygame.Surface) -> None:
@@ -435,28 +444,100 @@ def main() -> None:
         # Background frame-grab thread
         _frame_queue: queue.Queue = queue.Queue(maxsize=2)
         _exposure_ref = [int(ae.current * 1_000_000)]
+        _focus_hardware_roi: bool = False   # True when ZWO hardware ROI is active for focus
+
+        def _make_grab_worker(stop_event: threading.Event) -> threading.Thread:
+            """Return a new grab thread bound to *stop_event*.
+
+            Each call creates a fresh Event that is never cleared, so a thread that
+            outlives its intended lifetime (join timeout) remains stopped — it holds
+            a reference to its own (already-set) event and cannot be un-stopped by
+            a subsequent _restart_grab() call.
+            """
+            def _worker() -> None:
+                configured_us: int | None = None   # exposure last confirmed on camera
+                while not stop_event.is_set():
+                    exp_us = _exposure_ref[0]
+                    # Only pass exposure_us when it differs from what is already
+                    # configured.  Passing None skips the get_control_value SDK
+                    # call that would otherwise happen on every WORKING iteration.
+                    result = grabber.grab_frame(
+                        exposure_us  = exp_us if exp_us != configured_us else None,
+                        dark         = not _focus_hardware_roi and grabber.cal_path is not None,
+                        flat         = not _focus_hardware_roi and grabber.cal_path is not None,
+                        dpc          = False,
+                        demosaic     = grabber.pattern is not None,
+                    )
+                    if result.status == GrabStatus.WORKING:
+                        time.sleep(0.001)   # yield GIL; don't flood SDK with status polls
+                        continue
+                    if result.status == GrabStatus.STARTED:
+                        configured_us = exp_us
+                        continue
+                    # SUCCESS, TIMEOUT, or FAILED — enqueue for the main loop
+                    configured_us = exp_us
+                    if (result.status == GrabStatus.SUCCESS
+                            and recorder is not None
+                            and result.raw_frame is not None):
+                        recorder.save(result.raw_frame)
+                    try:
+                        _frame_queue.put_nowait(result)
+                    except queue.Full:
+                        pass
+            return threading.Thread(target=_worker, daemon=True)
+
         _stop_grab = threading.Event()
-
-        def _grab_worker() -> None:
-            while not _stop_grab.is_set():
-                result = grabber.grab_frame(
-                    exposure_us  = _exposure_ref[0],
-                    dark         = grabber.cal_path is not None,
-                    flat         = grabber.cal_path is not None,
-                    dpc          = False,
-                    demosaic     = grabber.pattern is not None,
-                )
-                if (result.status == GrabStatus.SUCCESS
-                        and recorder is not None
-                        and result.raw_frame is not None):
-                    recorder.save(result.raw_frame)
-                try:
-                    _frame_queue.put_nowait(result)
-                except queue.Full:
-                    pass
-
-        _grab_thread = threading.Thread(target=_grab_worker, daemon=True)
+        _grab_thread = _make_grab_worker(_stop_grab)
         _grab_thread.start()
+
+        _focus_roi_saved: tuple[int, int, int, int] | None = None
+
+        def _stop_and_reset_grab() -> None:
+            """Signal the current grab thread to stop and wait for it to exit.
+
+            The stop event is NOT cleared after join so that a thread which outlives
+            the timeout remains permanently stopped (it holds a reference to its own
+            set event).
+            """
+            _stop_grab.set()
+            _grab_thread.join(timeout=5.0)
+            grabber.reset()
+
+        def _restart_grab() -> None:
+            nonlocal _stop_grab, _grab_thread
+            _stop_grab = threading.Event()          # new event; old thread keeps its (set) one
+            _grab_thread = _make_grab_worker(_stop_grab)
+            _grab_thread.start()
+
+        def _enter_focus_active() -> None:
+            nonlocal _focus_roi_saved, _focus_hardware_roi
+            if not isinstance(cam, ZwoAsiCamera):
+                return   # VirtualCamera: fall back to software crop
+            _stop_and_reset_grab()
+            saved = cam.get_roi()
+            _focus_roi_saved = saved
+            roi_x, roi_y, roi_w, roi_h = saved
+            sensor_cx = roi_x + int(state.focus_center_x * roi_w)
+            sensor_cy = roi_y + int(state.focus_center_y * roi_h)
+            sensor_w  = cam.info.sensor_width_px
+            sensor_h  = cam.info.sensor_height_px
+            fx = max(0, min(sensor_w - 200, (sensor_cx - 100) & ~1))
+            fy = max(0, min(sensor_h - 200, (sensor_cy - 100) & ~1))
+            cam.set_roi(x=fx, y=fy, width=200, height=200)
+            _focus_hardware_roi = True
+            _restart_grab()
+
+        def _exit_focus() -> None:
+            nonlocal _focus_roi_saved, _focus_hardware_roi
+            if _focus_hardware_roi and _focus_roi_saved is not None and isinstance(cam, ZwoAsiCamera):
+                _stop_and_reset_grab()
+                x, y, w, h = _focus_roi_saved
+                cam.set_roi(x=x, y=y, width=w, height=h)
+                _focus_hardware_roi = False
+                _focus_roi_saved = None
+                _restart_grab()
+            state.focus_state = FocusState.OFF
+            state.mode = ViewMode.LIVE
 
         last_surface: pygame.Surface | None = None
         frame_count  = 0
@@ -485,6 +566,14 @@ def main() -> None:
                 elif event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_q, pygame.K_ESCAPE):
                         running = False
+                    elif state.focus_state != FocusState.OFF:
+                        _exit_focus()
+                    elif event.key == pygame.K_f:
+                        if state.recording and recorder is not None:
+                            state.recording = False
+                            recorder.stop()
+                        state.focus_state = FocusState.WAITING
+                        state.mode = ViewMode.LIVE
                     elif event.key == pygame.K_r and recorder is not None:
                         if state.recording:
                             state.recording = False
@@ -499,16 +588,25 @@ def main() -> None:
                     dispatcher.on_mouse_move(*event.pos)
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    if event.button == 1:
-                        dispatcher.on_left_click()
-                    elif event.button == 2:
-                        if dispatcher.on_middle_click():
-                            alert_timer = ALERT_DURATION
-                    elif event.button == 3:
-                        dispatcher.on_right_click()
+                    if state.focus_state == FocusState.WAITING:
+                        state.focus_center_x = event.pos[0] / WINDOW_W
+                        state.focus_center_y = event.pos[1] / WINDOW_H
+                        _enter_focus_active()
+                        state.focus_state = FocusState.ACTIVE
+                    elif state.focus_state == FocusState.ACTIVE:
+                        _exit_focus()
+                    else:
+                        if event.button == 1:
+                            dispatcher.on_left_click()
+                        elif event.button == 2:
+                            if dispatcher.on_middle_click():
+                                alert_timer = ALERT_DURATION
+                        elif event.button == 3:
+                            dispatcher.on_right_click()
 
                 elif event.type == pygame.MOUSEWHEEL:
-                    dispatcher.on_scroll(event.y)
+                    if state.focus_state == FocusState.OFF:
+                        dispatcher.on_scroll(event.y)
 
             # -- mode change --------------------------------------------------
             if state.mode != prev_mode:
@@ -539,13 +637,29 @@ def main() -> None:
                 t_last_frame = now
                 frame_count += 1
 
-                if state.mode == ViewMode.LIVE:
+                if state.focus_state == FocusState.ACTIVE:
+                    if _focus_hardware_roi:
+                        # Camera is delivering the 200×200 ROI directly
+                        data8 = stretch_to_uint8(result.frame.data)
+                    else:
+                        # VirtualCamera fallback: software crop from full frame
+                        h, w = result.frame.data.shape[:2]
+                        cx = int(state.focus_center_x * w)
+                        cy = int(state.focus_center_y * h)
+                        x1 = max(0, cx - FOCUS_ROI_HALF)
+                        y1 = max(0, cy - FOCUS_ROI_HALF)
+                        x2 = min(w, cx + FOCUS_ROI_HALF)
+                        y2 = min(h, cy + FOCUS_ROI_HALF)
+                        data8 = stretch_to_uint8(result.frame.data[y1:y2, x1:x2])
+                    last_surface = pygame.transform.smoothscale(
+                        to_surface(data8), (WINDOW_W, WINDOW_H)
+                    )
+                elif state.mode == ViewMode.LIVE:
                     ae.update(result.frame.data)
                     data8 = stretch_to_uint8(result.frame.data)
                     data8 = _apply_brightness(data8, state.brightness)
-                    img_surface  = to_surface(data8)
                     last_surface = pygame.transform.smoothscale(
-                        img_surface, (WINDOW_W, WINDOW_H)
+                        to_surface(data8), (WINDOW_W, WINDOW_H)
                     )
                 else:
                     if stacker.add_frame(result.frame.data, stack_seq.current):
@@ -597,7 +711,13 @@ def main() -> None:
                 _render_hover_label(screen, ov_table, *cursor_pos)
 
             # HUD
-            if state.mode == ViewMode.ACCUMULATE:
+            if state.focus_state == FocusState.ACTIVE:
+                hud = (
+                    f"FOCUS  exp={ae.current:.4g}s  "
+                    f"gain={actual_gain}  fps={fps_display:.1f}  "
+                    f"— click or any key to exit"
+                )
+            elif state.mode == ViewMode.ACCUMULATE:
                 hud = (
                     f"STACK  exp={stack_seq.current:.4g}s  "
                     f"gain={actual_gain}  "
@@ -612,6 +732,9 @@ def main() -> None:
                     f"{cam_config_ref[0].telescope_description}"
                 )
             _render_hud(screen, hud)
+            if state.focus_state == FocusState.WAITING:
+                _render_focus_waiting(screen)
+                _draw_cursor(screen, *cursor_pos)
             if state.recording:
                 _render_recording(screen)
 
@@ -623,6 +746,7 @@ def main() -> None:
 
             cursor_visible = (
                 not state.menu_open
+                and state.focus_state == FocusState.OFF
                 and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY
             )
             pygame.mouse.set_visible(cursor_visible)

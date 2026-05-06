@@ -557,6 +557,11 @@ class ZwoAsiCamera(Camera):
             raw = self._cam.get_data_after_exposure(None)
             roi_w = self._meta_snapshot.roi_width
             roi_h = self._meta_snapshot.roi_height
+            n_pixels = len(raw) // 2  # uint16 = 2 bytes
+            if n_pixels != roi_w * roi_h:
+                # ROI changed between start_exposure and read_frame (e.g. focus mode
+                # switch). Re-read actual dimensions from the camera hardware.
+                _, _, roi_w, roi_h = self._cam.get_roi()
             data = np.frombuffer(raw, dtype=np.uint16).reshape(roi_h, roi_w)
             return Frame(data=data, meta=self._meta_snapshot)
         except asi.ZWO_Error as exc:

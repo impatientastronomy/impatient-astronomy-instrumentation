@@ -17,6 +17,12 @@ class ViewMode(Enum):
     ACCUMULATE = auto()   # display the running stack
 
 
+class FocusState(Enum):
+    OFF     = auto()   # normal operation
+    WAITING = auto()   # 'f' pressed — showing crosshairs, awaiting click
+    ACTIVE  = auto()   # ROI defined — displaying zoomed focus patch
+
+
 @dataclass
 class ViewState:
     """
@@ -48,3 +54,6 @@ class ViewState:
     mount_connected: bool = False
     all_sky_mode: bool = False
     recording: bool = False
+    focus_state: FocusState = FocusState.OFF
+    focus_center_x: float = 0.5   # normalized [0, 1] in window coords at time of click
+    focus_center_y: float = 0.5

@@ -71,11 +71,13 @@ CURSOR_HIDE_DELAY = 5.0
 ALERT_DURATION    = 3.0
 
 FOCUS_ROI_HALF = 100   # half-width of the 200×200 focus patch
+_MENU_ROW_H    = 44    # pixel height of one menu row (shared by renderer and hover hit-test)
 
 GREEN  = (0, 220, 0)
 WHITE  = (220, 220, 220)
 DIM    = (140, 140, 140)
 RED    = (220, 60, 60)
+AMBER  = (220, 180, 0)
 BLACK  = (0, 0, 0)
 
 
@@ -87,6 +89,7 @@ def _build_menu(
     state: ViewState,
     on_connect,
     on_disconnect,
+    on_start_focus,
     telescope_configs: list[tuple[str, str]],   # [(config_name, description), …]
     on_select_config,                            # callable(config_name)
     active_desc_fn,                              # callable() → current description str
@@ -133,6 +136,7 @@ def _build_menu(
     menu.add(MenuItem("Cancel"))
     menu.add(MenuItem("Brightness", submenu=brightness_submenu))
     menu.add(MenuItem(_mode_label, action=_toggle_mode))
+    menu.add(MenuItem("Focus", action=on_start_focus))
     menu.add(MenuItem("Telescope", submenu=telescope_submenu))
     menu.add(MenuItem("Quit", action=lambda: pygame.event.post(
         pygame.event.Event(pygame.QUIT)
@@ -159,7 +163,7 @@ def _render_menu(surface: pygame.Surface, menu: Menu) -> None:
     font  = pygame.font.SysFont("monospace", 30)
     items = menu.current_items
     sel   = menu.selection_index
-    row_h = 44
+    row_h = _MENU_ROW_H
     total = len(items) * row_h
     y0    = (h - total) // 2
 
@@ -188,6 +192,20 @@ def _render_recording(surface: pygame.Surface) -> None:
     label = font.render("● Recording", True, RED)
     x = surface.get_width() // 2 - label.get_width() // 2
     surface.blit(label, (x, 8))
+
+
+def _render_top_right_badges(
+    surface: pygame.Surface,
+    badges: list[tuple[str, tuple[int, int, int]]],
+) -> None:
+    """Render a stacked column of (text, color) badges anchored to the top-right corner."""
+    font = pygame.font.SysFont("monospace", 22)
+    y = 8
+    for text, color in badges:
+        label = font.render(text, True, color)
+        x = surface.get_width() - label.get_width() - 8
+        surface.blit(label, (x, y))
+        y += label.get_height() + 4
 
 
 def _render_alert(surface: pygame.Surface, text: str) -> None:
@@ -358,6 +376,17 @@ def main() -> None:
 
     with cam_ctx as cam:
 
+        # Warn if the connected camera has no entry in configuration.yaml.
+        # camera_id == 0 means the EEPROM was never written (run set_camera_id.py).
+        _cam_configured = config is not None and cam.info.camera_id in config.camera_ids()
+        if not _cam_configured:
+            id_note = " (EEPROM not set)" if cam.info.camera_id == 0 else ""
+            logging.warning(
+                "Camera ID %d%s not found in configuration.yaml — running with defaults. "
+                "Run set_camera_id.py to register this camera.",
+                cam.info.camera_id, id_note,
+            )
+
         # Apply configuration to camera
         if config is not None:
             cam_config = config.get_config(cam.info.camera_id)
@@ -426,10 +455,18 @@ def main() -> None:
             config.telescope_descriptions(cam.info.camera_id) if config else []
         )
 
+        def _start_focus_mode() -> None:
+            if state.recording and recorder is not None:
+                state.recording = False
+                recorder.stop()
+            state.focus_state = FocusState.WAITING
+            state.mode = ViewMode.LIVE
+
         menu = _build_menu(
             state,
             on_connect      = _connect_mount,
             on_disconnect   = _disconnect_mount,
+            on_start_focus  = _start_focus_mode,
             telescope_configs = telescope_configs,
             on_select_config  = _on_select_config,
             active_desc_fn    = lambda: cam_config_ref[0].telescope_description or "Telescope",
@@ -544,6 +581,7 @@ def main() -> None:
         fps_display  = 0.0
         t_last_frame = time.monotonic()
         prev_mode    = state.mode
+        _cal_ok      = True   # updated from grab results; False → show Uncalibrated notice
 
         t_last_move = time.monotonic()
         cursor_pos  = (WINDOW_W // 2, WINDOW_H // 2)
@@ -586,6 +624,14 @@ def main() -> None:
                     cursor_pos  = event.pos
                     t_last_move = time.monotonic()
                     dispatcher.on_mouse_move(*event.pos)
+                    if state.menu_open:
+                        items = menu.current_items
+                        if items:
+                            total = len(items) * _MENU_ROW_H
+                            y0 = (WINDOW_H - total) // 2
+                            cy = event.pos[1]
+                            if y0 <= cy < y0 + total:
+                                menu.set_selection((cy - y0) // _MENU_ROW_H)
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if state.focus_state == FocusState.WAITING:
@@ -636,6 +682,8 @@ def main() -> None:
                 fps_display  = 1.0 / max(now - t_last_frame, 1e-6)
                 t_last_frame = now
                 frame_count += 1
+                if state.focus_state == FocusState.OFF:
+                    _cal_ok = result.calibrated
 
                 if state.focus_state == FocusState.ACTIVE:
                     if _focus_hardware_roi:
@@ -737,6 +785,13 @@ def main() -> None:
                 _draw_cursor(screen, *cursor_pos)
             if state.recording:
                 _render_recording(screen)
+            _top_right: list[tuple[str, tuple[int, int, int]]] = []
+            if not _cam_configured:
+                _top_right.append(("Unconfigured", AMBER))
+            if not _cal_ok and state.focus_state == FocusState.OFF:
+                _top_right.append(("Uncalibrated", AMBER))
+            if _top_right:
+                _render_top_right_badges(screen, _top_right)
 
             if state.menu_open:
                 _render_menu(screen, menu)
@@ -745,9 +800,11 @@ def main() -> None:
                 _render_alert(screen, "Caution: Mount is moving")
 
             cursor_visible = (
-                not state.menu_open
-                and state.focus_state == FocusState.OFF
-                and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY
+                state.menu_open
+                or (
+                    state.focus_state == FocusState.OFF
+                    and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY
+                )
             )
             pygame.mouse.set_visible(cursor_visible)
 

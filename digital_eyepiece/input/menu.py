@@ -84,6 +84,12 @@ class Menu:
         new_idx = max(0, min(len(items) - 1, idx + delta))
         self._set_top(items, new_idx)
 
+    def set_selection(self, idx: int) -> None:
+        """Set the highlighted item directly by index (e.g. from mouse hover). Clamped to valid range."""
+        items, _ = self._top()
+        if items:
+            self._set_top(items, max(0, min(len(items) - 1, idx)))
+
     def select(self) -> bool:
         """
         Activate the current item.

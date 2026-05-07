@@ -234,12 +234,22 @@ class TestDarkPipelineIntegration:
         # FakeCamera returns 1000; dark is 200 → expected 800
         assert result.frame.data[0, 0] == 800
 
-    def test_exits_when_no_dark_found(self, grabber, camera):
+    def test_warns_and_continues_when_no_dark_found(self, grabber, camera):
         camera.set_status(ExposureStatus.IDLE)
         grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
         camera.set_status(ExposureStatus.SUCCESS)
-        with pytest.raises(SystemExit):
-            grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        result = grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        assert result.status == GrabStatus.SUCCESS
+        assert result.calibrated is False
+
+    def test_calibrated_true_when_dark_succeeds(self, grabber, camera):
+        grabber.imDark = np.full((100, 100), 200, dtype=np.uint16)
+        grabber.current_dark = "C1_Ha_2e6us_20C_001.tif"
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        assert result.calibrated is True
 
 
 # ---------------------------------------------------------------------------
@@ -257,12 +267,20 @@ class TestFlatPipelineIntegration:
         # FakeCamera returns 1000; imFlat=2000 → 1000 * 2000/1000 = 2000
         assert result.frame.data[0, 0] == 2000
 
-    def test_exits_when_no_flat_found(self, grabber, camera):
+    def test_warns_and_continues_when_no_flat_found(self, grabber, camera):
         camera.set_status(ExposureStatus.IDLE)
         grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
         camera.set_status(ExposureStatus.SUCCESS)
-        with pytest.raises(SystemExit):
-            grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
+        result = grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
+        assert result.status == GrabStatus.SUCCESS
+        assert result.calibrated is False
+
+    def test_calibrated_true_when_no_cal_requested(self, grabber, camera):
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=False, flat=False, dpc=False, demosaic=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=False, flat=False, dpc=False, demosaic=False)
+        assert result.calibrated is True
 
 
 # ---------------------------------------------------------------------------

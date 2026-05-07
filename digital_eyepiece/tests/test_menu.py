@@ -155,6 +155,35 @@ class TestSubmenus:
 # Edge cases
 # ---------------------------------------------------------------------------
 
+class TestSetSelection:
+    def test_set_selection_basic(self):
+        m = _menu_with_items("A", "B", "C")
+        m.set_selection(2)
+        assert m.selection_index == 2
+
+    def test_set_selection_clamped_below(self):
+        m = _menu_with_items("A", "B", "C")
+        m.set_selection(-5)
+        assert m.selection_index == 0
+
+    def test_set_selection_clamped_above(self):
+        m = _menu_with_items("A", "B", "C")
+        m.set_selection(99)
+        assert m.selection_index == 2
+
+    def test_set_selection_inside_submenu(self):
+        sub = [MenuItem("X"), MenuItem("Y"), MenuItem("Z")]
+        m = Menu()
+        m.add(MenuItem("Parent", submenu=sub))
+        m.select()          # enter submenu
+        m.set_selection(2)
+        assert m.current_item.label == "Z"
+
+    def test_set_selection_empty_menu_is_noop(self):
+        m = Menu()
+        m.set_selection(0)  # should not raise
+
+
 class TestEdgeCases:
     def test_empty_menu_select_returns_true(self):
         m = Menu()

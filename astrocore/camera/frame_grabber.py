@@ -27,7 +27,7 @@ temperature drifts to a better match in the dark library.
 
 from __future__ import annotations
 
-import sys
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
@@ -58,6 +58,7 @@ class GrabResult:
     frame: Frame | None = None
     raw_frame: Frame | None = None   # pre-calibration; populated on SUCCESS
     message: str = ""
+    calibrated: bool = True          # False if any requested cal step was skipped
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,7 @@ class FrameGrabber:
         self.current_dark: str = ""
         self.current_dark_flip: int = 0  # flip int of the dark file currently in imDark
         self.dark_table: pd.DataFrame = pd.DataFrame()
+        self._warned_missing: set[str] = set()  # cal types already warned about this session
 
     @property
     def cam(self) -> Camera:
@@ -183,13 +185,16 @@ class FrameGrabber:
 
             imR = raw_frame.data.copy().astype(np.uint16)
             meta = raw_frame.meta
+            cal_ok = True
 
             if dark:
-                imR = self._pipeline_dark(imR, meta)
+                imR, ok = self._pipeline_dark(imR, meta)
+                cal_ok = cal_ok and ok
             if dpc:
                 imR = self._pipeline_dpc(imR, meta)
             if flat:
-                imR = self._pipeline_flat(imR, meta)
+                imR, ok = self._pipeline_flat(imR, meta)
+                cal_ok = cal_ok and ok
 
             if demosaic and self.pattern is not None:
                 imP = _debayer(imR, self.pattern)
@@ -200,6 +205,7 @@ class FrameGrabber:
                 status=GrabStatus.SUCCESS,
                 frame=Frame(data=imP, meta=meta),
                 raw_frame=raw_frame,
+                calibrated=cal_ok,
             )
 
         return GrabResult(status=GrabStatus.FAILED, message="Unexpected exposure status.")
@@ -218,7 +224,7 @@ class FrameGrabber:
 
     # -- calibration pipeline -----------------------------------------------
 
-    def _pipeline_dark(self, imR: np.ndarray, meta) -> np.ndarray:
+    def _pipeline_dark(self, imR: np.ndarray, meta) -> tuple[np.ndarray, bool]:
         """Lazy-load best-matching dark, refresh if temperature drifted, subtract."""
         if _is_array(self.imDark):
             # Already loaded — check if temperature has drifted to a better match.
@@ -230,19 +236,22 @@ class FrameGrabber:
                 self.current_dark = best["filename"]
                 self.current_dark_flip = best["flip"]
                 self.imDPC = 0
-            return _subtract_dark(imR, self.imDark)
+            return _subtract_dark(imR, self.imDark), True
 
         # Not yet loaded — find best match in the dark library.
         self._ensure_dark_table()
         best = self._find_best_dark_row(meta)
         if best is None:
-            _exit_missing_cal("dark", self.cal_path, meta)
+            if "dark" not in self._warned_missing:
+                _warn_missing_cal("dark", self.cal_path, meta)
+                self._warned_missing.add("dark")
+            return imR, False
         raw = _read_calibration(best["path"], meta, np.uint16)
         self.imDark = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
         self.current_dark = best["filename"]
         self.current_dark_flip = best["flip"]
         self.imDPC = 0
-        return _subtract_dark(imR, self.imDark)
+        return _subtract_dark(imR, self.imDark), True
 
     def _pipeline_dpc(self, imR: np.ndarray, meta) -> np.ndarray:
         """Lazy-load dead-pixel mask and replace bad pixels with 2nd-neighbor mean."""
@@ -261,11 +270,14 @@ class FrameGrabber:
 
         return _fix_dead_pixels_mask(imR, self.imDPC)
 
-    def _pipeline_flat(self, imR: np.ndarray, meta) -> np.ndarray:
+    def _pipeline_flat(self, imR: np.ndarray, meta) -> tuple[np.ndarray, bool]:
         """Lazy-load matching flat (camera + filter + bin) and apply per-pixel scaling."""
         if not _is_array(self.imFlat):
             if self.cal_path is None:
-                _exit_missing_cal("flat", self.cal_path, meta)
+                if "flat" not in self._warned_missing:
+                    _warn_missing_cal("flat", self.cal_path, meta)
+                    self._warned_missing.add("flat")
+                return imR, False
             flat_table = scan_folder(Path(self.cal_path) / "flats")
             matching = flat_table[
                 (flat_table.camera_id == meta.camera_id) &
@@ -273,12 +285,15 @@ class FrameGrabber:
                 (flat_table["bin"] == meta.binning)
             ]
             if len(matching) == 0:
-                _exit_missing_cal("flat", self.cal_path, meta)
+                if "flat" not in self._warned_missing:
+                    _warn_missing_cal("flat", self.cal_path, meta)
+                    self._warned_missing.add("flat")
+                return imR, False
             best = matching.iloc[0]
             raw = _read_calibration(best["path"], meta, np.float32)
             self.imFlat = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
 
-        return _apply_flat_field(imR, self.imFlat)
+        return _apply_flat_field(imR, self.imFlat), True
 
     # -- dark library helpers -----------------------------------------------
 
@@ -448,8 +463,8 @@ def _apply_flip_correction(data: np.ndarray, cal_flip: int, cam_flip: int) -> np
     return result
 
 
-def _exit_missing_cal(kind: str, cal_path, meta) -> None:
-    """Print a descriptive error and terminate the process."""
+def _warn_missing_cal(kind: str, cal_path, meta) -> None:
+    """Log a warning when a calibration file cannot be found. Does not abort."""
     folder = Path(cal_path) / f"{kind}s" if cal_path else "<cal_path not set>"
     if kind == "dark":
         science_us = round(meta.exposure_seconds * 1_000_000)
@@ -461,10 +476,9 @@ def _exit_missing_cal(kind: str, cal_path, meta) -> None:
         pattern = (
             f"Cam{meta.camera_id}Bin{meta.binning}Flip*Filt{meta.filter_id}_*us_*C_*.tif"
         )
-    print(
-        f"\nCalibration error: no {kind} file found.\n"
-        f"  Folder  : {folder}\n"
-        f"  Pattern : {pattern}",
-        file=sys.stderr,
+    logging.warning(
+        "No %s calibration file found — continuing uncalibrated.\n"
+        "  Folder  : %s\n"
+        "  Pattern : %s",
+        kind, folder, pattern,
     )
-    sys.exit(1)

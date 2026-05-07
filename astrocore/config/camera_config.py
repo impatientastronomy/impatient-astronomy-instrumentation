@@ -15,21 +15,21 @@ Cameras section — two supported formats
 Single camera (current format)::
 
     cameras:
-      ID: 3
-      config 1:
+      id: 3
+      config_1:
         telescope_description: Vixen_600mm
         ...
-      config 2:
+      config_2:
         telescope_description: SCT_2000
         ...
 
 Multiple cameras (list format, for future multi-camera setups)::
 
     cameras:
-      - ID: 3
-        config 1: ...
-      - ID: 7
-        config 1: ...
+      - id: 3
+        config_1: ...
+      - id: 7
+        config_1: ...
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ class Configuration:
         return [b.camera_id for b in self._blocks]
 
     def config_names(self, camera_id: int) -> list[str]:
-        """Config names for a camera, e.g. ['config 1', 'config 2']."""
+        """Config names for a camera, e.g. ['config_1', 'config_2']."""
         block = self._block(camera_id)
         return list(block.configs) if block else []
 
@@ -206,11 +206,12 @@ class Configuration:
 
 class _CameraBlock:
     def __init__(self, raw: dict) -> None:
-        self.camera_id: int = int(raw.get("ID", 0))
+        # Accept both 'id' (current) and 'ID' (legacy) key names.
+        self.camera_id: int = int(raw.get("id", raw.get("ID", 0)))
         self.configs: dict[str, dict] = {
             k: (v or {})
             for k, v in raw.items()
-            if k != "ID" and isinstance(v, dict)
+            if k not in ("id", "ID") and isinstance(v, dict)
         }
 
     def list_configs(self) -> list[tuple[str, str]]:

@@ -27,7 +27,7 @@ class Recorder:
     def __init__(self, record_path: Path) -> None:
         self._record_path = record_path
         self._session_dir: Path | None = None
-        self._counter: itertools.count = itertools.count(1)
+        self._counters: dict[tuple[int, int], itertools.count] = {}
         self.active: bool = False
 
     @property
@@ -40,7 +40,7 @@ class Recorder:
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self._session_dir = self._record_path / ts
         self._session_dir.mkdir(exist_ok=True)
-        self._counter = itertools.count(1)
+        self._counters = {}
         self.active = True
 
     def stop(self) -> None:
@@ -50,7 +50,11 @@ class Recorder:
         """Write one raw frame to disk. Thread-safe; no-op when not active."""
         if not self.active or self._session_dir is None:
             return
-        index = next(self._counter)
+        exp_us = round((frame.meta.exposure_seconds or 0) * 1_000_000)
+        key = (frame.meta.camera_id, exp_us)
+        if key not in self._counters:
+            self._counters[key] = itertools.count(1)
+        index = next(self._counters[key])
         path = self._session_dir / frame_filename(frame.meta, index)
         tifffile.imwrite(
             str(path),

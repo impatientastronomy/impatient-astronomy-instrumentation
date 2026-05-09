@@ -85,9 +85,8 @@ class VirtualCamera(Camera):
         self.offset: int = 0
 
         self._file_table: pd.DataFrame = pd.DataFrame()
-        self._frame_cursor: int = 0
-        self._prev_exposure_us: int | None = None
-        self._t_exp: float = float("inf")   # monotonic time when exposure completes
+        self._cursors: dict[int, int] = {}   # exposure_us → next row index
+        self._t_exp: float = float("inf")    # monotonic time when exposure completes
         self._image_shape: tuple = (0, 0)
         self._camera_id: int = camera_id or 0
 
@@ -119,15 +118,13 @@ class VirtualCamera(Camera):
         first = tifffile.imread(str(table.path.iloc[0]))
         self._image_shape = first.shape
 
-        self._frame_cursor = 0
-        self._prev_exposure_us = None
+        self._cursors = {}
         self._t_exp = float("inf")
         self._connected = True
 
     def disconnect(self) -> None:
         self._file_table = pd.DataFrame()
-        self._frame_cursor = 0
-        self._prev_exposure_us = None
+        self._cursors = {}
         self._t_exp = float("inf")
         self.meta = PersistentMeta()
         self._connected = False
@@ -171,14 +168,14 @@ class VirtualCamera(Camera):
         matching = self._file_table[self._file_table.exposure_us == exp_us]
         if len(matching) == 0:
             matching = self._file_table
+            exp_us = -1   # sentinel so fallback set has its own cursor
 
-        # Reset cursor when exposure changes or when past end of the matching set
-        if exp_us != self._prev_exposure_us or self._frame_cursor >= len(matching):
-            self._frame_cursor = 0
-        self._prev_exposure_us = exp_us
+        cursor = self._cursors.get(exp_us, 0)
+        if cursor >= len(matching):
+            cursor = 0
+        self._cursors[exp_us] = cursor + 1
 
-        row = matching.iloc[self._frame_cursor].to_dict()
-        self._frame_cursor += 1
+        row = matching.iloc[cursor].to_dict()
 
         import tifffile
         data = tifffile.imread(str(row["path"]))

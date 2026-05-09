@@ -30,14 +30,14 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from astrocore.camera.base import FrameMeta
 from astrocore.camera.naming import frame_filename
 from astrocore.camera.zwo_asi import FlipMode, ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import load as load_config
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent / "configuration.yaml"
+_DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configuration.yaml"
 
 _print_lock = threading.Lock()
 

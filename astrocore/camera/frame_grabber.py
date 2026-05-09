@@ -381,7 +381,7 @@ def _apply_flat_field(imR: np.ndarray, imFlat: np.ndarray) -> np.ndarray:
     Apply flat-field correction. imFlat values are per-pixel multipliers
     normalized to 1000 (1000 = unity gain). Result is clamped to uint16.
     """
-    result = imR.astype(np.float32) * imFlat.astype(np.float32) / 1000.0
+    result = imR.astype(np.float32) * imFlat.astype(np.float32) / 10000.0
     return np.clip(result, 0, 65535).astype(np.uint16)
 
 

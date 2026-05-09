@@ -27,11 +27,11 @@ from pathlib import Path
 import yaml
 
 # Allow running from the repo root without installing astrocore.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent / "configuration.yaml"
+_DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configuration.yaml"
 
 
 # ---------------------------------------------------------------------------

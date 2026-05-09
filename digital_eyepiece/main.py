@@ -31,6 +31,8 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import pygame
 
@@ -710,8 +712,8 @@ def main() -> None:
                         to_surface(data8), (WINDOW_W, WINDOW_H)
                     )
                 else:
-                    if stacker.add_frame(result.frame.data, stack_seq.current):
-                        stack_seq.advance()
+                    stacker.add_frame(result.frame.data, stack_seq.current)
+                    stack_seq.advance()
 
             if state.mode == ViewMode.ACCUMULATE:
                 display8 = stacker.get_display_frame()
@@ -769,7 +771,7 @@ def main() -> None:
                 hud = (
                     f"STACK  exp={stack_seq.current:.4g}s  "
                     f"gain={actual_gain}  "
-                    f"frames={stacker.frame_count}  t={stacker.t_accum:.1f}s  "
+                    f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  t={stacker.t_accum:.1f}s  "
                     f"{cam_config_ref[0].telescope_description}"
                 )
             else:

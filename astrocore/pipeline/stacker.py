@@ -13,6 +13,7 @@ Stacker           -- accumulates frames and produces display-ready images
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 import cv2
 
@@ -27,7 +28,7 @@ from .stretch import (
 
 _BLEND_ALPHA    = 0.06    # blending weight for each display tick
 _MAX_SHIFT_PX   = 50.0    # reject frames with alignment shift larger than this
-_RESPONSE_MIN   = 0.05    # reject frames with weak phase-correlation peak (plane/cloud/satellite)
+_ALIGN_RF       = 8       # block-sum downsample factor for alignment preprocessing
 
 
 class ExposureSequence:
@@ -98,8 +99,10 @@ class Stacker:
         self.median_kernel = median_kernel
 
         self._stack_sum: np.ndarray | None = None
-        self._ref_frame: np.ndarray | None = None   # first frame; anchor for phase correlation
+        self._ref_frame: np.ndarray | None = None   # previous accepted raw frame
+        self._cumulative_shift: tuple[float, float] = (0.0, 0.0)
         self._frame_count: int = 0
+        self._skipped_count: int = 0
         self._t_accum: float = 0.0
         self._blend: np.ndarray | None = None
         self._sky_model: np.ndarray | None = None
@@ -110,6 +113,10 @@ class Stacker:
     @property
     def frame_count(self) -> int:
         return self._frame_count
+
+    @property
+    def skipped_count(self) -> int:
+        return self._skipped_count
 
     @property
     def t_accum(self) -> float:
@@ -129,7 +136,9 @@ class Stacker:
         """Discard the current stack and start fresh."""
         self._stack_sum = None
         self._ref_frame = None
+        self._cumulative_shift = (0.0, 0.0)
         self._frame_count = 0
+        self._skipped_count = 0
         self._t_accum = 0.0
         self._blend = None
         self._sky_model = None
@@ -151,19 +160,30 @@ class Stacker:
         if self._stack_sum is None:
             self._stack_sum = img.copy()
             self._ref_frame = img.copy()
+            self._cumulative_shift = (0.0, 0.0)
             self._frame_count = 1
             self._t_accum = exposure_s
             self._sky_dirty = True
             return True
 
-        shift, response = _estimate_shift(img, self._ref_frame)
-        if not _is_good_shift(shift) or response < _RESPONSE_MIN:
+        # Incremental shift: compare to the previous accepted raw frame so only
+        # per-frame drift matters, not total drift from the first frame.
+        incremental, _ = _estimate_shift(img, self._ref_frame)
+        if not _is_good_shift(incremental):
+            self._skipped_count += 1
+            dx, dy = incremental
+            logging.debug("frame skipped: shift=(%.1f, %.1f) mag=%.1f", dx, dy, (dx**2+dy**2)**0.5)
             return False
 
-        self._stack_sum = self._stack_sum + _apply_shift(img, shift)
+        cx, cy = self._cumulative_shift
+        ix, iy = incremental
+        self._cumulative_shift = (cx + ix, cy + iy)
+
+        self._stack_sum = self._stack_sum + _apply_shift(img, self._cumulative_shift)
         self._frame_count += 1
         self._t_accum += exposure_s
         self._sky_dirty = True
+        self._ref_frame = img.copy()
         return True
 
     # ── display output ────────────────────────────────────────────────────
@@ -229,18 +249,45 @@ def _median_filter(image: np.ndarray, kernel: int) -> np.ndarray:
     return filtered.astype(np.float32)
 
 
+def _make_star_image(img: np.ndarray) -> np.ndarray:
+    """
+    Downsample by block sum and subtract a blurred background to isolate star signals.
+
+    Block-summing integrates star flux into fewer pixels while averaging down
+    noise; background subtraction removes sky gradient and light pollution so
+    the phase correlator locks onto stars instead of broad background structure.
+    """
+    mono = img[:, :, 0].astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+    h, w = mono.shape
+    h2 = (h // _ALIGN_RF) * _ALIGN_RF
+    w2 = (w // _ALIGN_RF) * _ALIGN_RF
+    reduced = (
+        mono[:h2, :w2]
+        .reshape(h2 // _ALIGN_RF, _ALIGN_RF, w2 // _ALIGN_RF, _ALIGN_RF)
+        .sum(axis=(1, 3))
+    )
+    # Large box blur estimates the sky background at reduced resolution.
+    # 31x31 at rf=8 covers ~248 full-res px — large enough to span inter-star gaps.
+    bg = cv2.blur(reduced, (31, 31))
+    return np.maximum(0.0, reduced - bg)
+
+
 def _estimate_shift(
     frame: np.ndarray, reference: np.ndarray
 ) -> tuple[tuple[float, float], float]:
     """
     Phase-correlation shift estimate between frame and reference.
-    Uses the first channel for multi-channel images.
-    Returns ((dx, dy), response) where response is the normalized peak height (0–1).
-    Higher response means a more confident alignment.
+
+    Downsamples and background-subtracts both images first so the correlator
+    locks onto star signals rather than sky background or noise.
+    The reduced-resolution shift is scaled back to full-pixel coordinates.
+    Returns ((dx, dy), response).
     """
-    ref = reference[:, :, 0] if reference.ndim == 3 else reference
-    frm = frame[:, :, 0] if frame.ndim == 3 else frame
-    shift, response = cv2.phaseCorrelate(ref.astype(np.float32), frm.astype(np.float32))
+    ref_s = _make_star_image(reference)
+    frm_s = _make_star_image(frame)
+    win = cv2.createHanningWindow((ref_s.shape[1], ref_s.shape[0]), cv2.CV_32F)
+    shift_r, response = cv2.phaseCorrelate(ref_s, frm_s, win)
+    shift = (float(shift_r[0]) * _ALIGN_RF, float(shift_r[1]) * _ALIGN_RF)
     return shift, float(response)
 
 

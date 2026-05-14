@@ -188,12 +188,15 @@ class Stacker:
 
     # ── display output ────────────────────────────────────────────────────
 
-    def get_display_frame(self) -> np.ndarray | None:
+    def get_display_frame(self, sky_sub_scale: float = 1.0) -> np.ndarray | None:
         """
         Process the current stack into a displayable BGR uint8 image.
 
         Pipeline per call:
           sky subtraction → gamma + auto-brightness → saturation → temporal blend
+
+        sky_sub_scale multiplies the auto-computed sky coefficient, allowing
+        the user to dial the subtraction up or down without affecting the ramp.
 
         The sky model is recomputed only when a new frame has been added.
         The temporal blend is updated on every call, smoothing the transition
@@ -205,7 +208,7 @@ class Stacker:
         if imStack is None:
             return None
 
-        skyco = sky_coefficient(self._t_accum)
+        skyco = sky_coefficient(self._t_accum) * sky_sub_scale
         satco = saturation_coefficient(self._t_accum)
 
         # Sky model is cached and only refit after a new frame arrives

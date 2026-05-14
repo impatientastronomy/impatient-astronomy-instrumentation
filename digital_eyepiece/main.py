@@ -2,25 +2,36 @@
 Digital eyepiece — live viewer.
 
 Connects to the configured ZWO ASI camera, streams RAW16 frames, and
-displays them in a pygame window with percentile stretching.
+displays them in a pygame window with live stacking and sky overlay.
 
-All hardware settings (gain, bin, ROI, flip, focal length, mount driver,
-observer location) are read from configuration.yaml at the repo root.
+Layout
+------
+  ┌─────┬──────── Top status bar ────────┬─────┐
+  │     │  ★ mode · exp · gain · fps     │  ⚙  │
+  ├─────┴────────────────────────────────┴─────┤
+  │                                            │
+  │              Central region                │
+  │           (image displayed here)           │
+  │                                            │
+  ├─────┬──────── Bottom status bar ─────┬─────┤
+  │     │  ☰ frames · t_accum · scope   │     │
+  └─────┴────────────────────────────────┴─────┘
 
-Usage::
+Icons open menus:  ★ → Action   ⚙ → Utilities   ☰ → Controls
 
-    python -m digital_eyepiece.main [--exposure SECONDS]
-
-Mouse controls
---------------
-Left-click          : toggle Stream / Stack mode (menu closed)
-                      confirm menu selection (menu open)
-Right-click         : open menu (menu closed) / close menu (menu open)
-Scroll wheel        : zoom in/out
-Middle-click        : slew mount to cursor (when mount connected + overlay visible)
+Mouse
+-----
+Left-click  : over open menu item → select; off menu → cancel; no menu → Stack/Stream
+Right-click : context menu
+Right-hold  : drag image  (not yet implemented)
+Scroll      : zoom
+Middle-click: slew mount to cursor (mount connected + overlay visible)
+Hover       : show object name when star overlay is active
 
 Press Q or Escape to quit.
 """
+
+from __future__ import annotations
 
 import argparse
 import importlib
@@ -32,6 +43,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import math
 
 import numpy as np
 import pygame
@@ -72,155 +85,574 @@ TARGET_FPS        = 60
 CURSOR_HIDE_DELAY = 5.0
 ALERT_DURATION    = 3.0
 
-FOCUS_ROI_HALF = 100   # half-width of the 200×200 focus patch
-_MENU_ROW_H    = 44    # pixel height of one menu row (shared by renderer and hover hit-test)
+FOCUS_ROI_HALF = 100
 
-GREEN  = (0, 220, 0)
-WHITE  = (220, 220, 220)
-DIM    = (140, 140, 140)
-RED    = (220, 60, 60)
-AMBER  = (220, 180, 0)
+# Color palette — black background, dim grey UI elements
 BLACK  = (0, 0, 0)
+DIM    = (100, 100, 100)    # borders, inactive icons
+GREY   = (160, 160, 160)    # text and icons
+WHITE  = (210, 210, 210)    # highlighted text
+GREEN  = (0, 200, 0)        # selected menu item
+AMBER  = (200, 160, 0)      # warnings
+RED    = (200, 50, 50)      # recording indicator / alerts
+
+# Controls menu values
+_EXPOSURE_STEPS: list[tuple[str, float | None]] = [
+    ("Auto",   None),
+    ("0.1ms",  0.0001), ("0.2ms", 0.0002), ("0.5ms", 0.0005),
+    ("1ms",    0.001),  ("2ms",   0.002),  ("5ms",   0.005),
+    ("10ms",   0.01),   ("20ms",  0.02),   ("50ms",  0.05),
+    ("0.1s",   0.1),    ("0.2s",  0.2),    ("0.5s",  0.5),
+    ("1s",     1.0),    ("2s",    2.0),    ("5s",    5.0),
+    ("10s",    10.0),   ("20s",   20.0),
+]
+_BRIGHTNESS_STEPS: list[tuple[str, float]] = [
+    ("0.1×", 0.1), ("0.2×", 0.2), ("0.3×", 0.3),
+    ("0.5×", 0.5), ("0.7×", 0.7), ("1×",   1.0),
+    ("1.2×", 1.2), ("1.5×", 1.5), ("2×",   2.0),
+]
+_SKY_STEPS: list[tuple[str, float]] = [
+    ("0×",   0.0), ("0.1×", 0.1), ("0.2×", 0.2), ("0.3×", 0.3),
+    ("0.5×", 0.5), ("0.7×", 0.7), ("1×",   1.0), ("1.2×", 1.2),
+    ("1.5×", 1.5), ("2×",   2.0),
+]
+
+# ---------------------------------------------------------------------------
+# Layout geometry
+# ---------------------------------------------------------------------------
+
+def _make_layout(w: int, h: int) -> dict:
+    """
+    Compute all screen regions from window dimensions.
+
+    Status bars are Hd/20 tall and min(Hd,Wd) wide, centered horizontally.
+    Corner squares fill the leftover space at each corner.
+    """
+    sh = h // 20
+    sw = min(h, w)
+    sx = (w - sw) // 2   # left edge of status bars
+    cw = sx               # corner width (0 when w <= h)
+    return dict(
+        status_h  = sh,
+        status_w  = sw,
+        status_x  = sx,
+        corner_w  = cw,
+        top_bar   = pygame.Rect(sx, 0,      sw, sh),
+        bot_bar   = pygame.Rect(sx, h - sh, sw, sh),
+        central   = pygame.Rect(0,  sh,     w,  h - 2 * sh),
+        corner_tl = pygame.Rect(0,      0,      cw, sh),
+        corner_tr = pygame.Rect(w - cw, 0,      cw, sh),
+        corner_bl = pygame.Rect(0,      h - sh, cw, sh),
+        corner_br = pygame.Rect(w - cw, h - sh, cw, sh),
+        # Icon rects — square tiles at the ends of the status bars
+        icon_star    = pygame.Rect(sx,            0,      sh, sh),
+        icon_gear    = pygame.Rect(sx + sw - sh,  0,      sh, sh),
+        icon_sliders = pygame.Rect(sx,            h - sh, sh, sh),
+    )
+
+
+def _image_rect(cam_w: int, cam_h: int, central: pygame.Rect) -> pygame.Rect:
+    """Scale the camera image to fit inside the central region without clipping."""
+    cam_aspect     = cam_w / cam_h
+    central_aspect = central.width / central.height
+    if cam_aspect >= central_aspect:
+        iw = central.width
+        ih = int(iw / cam_aspect)
+    else:
+        ih = central.height
+        iw = int(ih * cam_aspect)
+    ix = central.x + (central.width  - iw) // 2
+    iy = central.y + (central.height - ih) // 2
+    return pygame.Rect(ix, iy, iw, ih)
 
 
 # ---------------------------------------------------------------------------
-# Menu construction
+# Menu builders
 # ---------------------------------------------------------------------------
 
-def _build_menu(
+def _build_action_menu(
     state: ViewState,
     on_connect,
     on_disconnect,
     on_start_focus,
-    telescope_configs: list[tuple[str, str]],   # [(config_name, description), …]
-    on_select_config,                            # callable(config_name)
-    active_desc_fn,                              # callable() → current description str
+    telescope_configs: list[tuple[str, str]],
+    on_select_config,
+    active_desc_fn,
+    recorder,
+    on_save,
+    on_quit,
 ) -> Menu:
-    brightness_submenu = [
-        MenuItem("0.1×", action=lambda: setattr(state, "brightness", 0.1)),
-        MenuItem("0.2×", action=lambda: setattr(state, "brightness", 0.2)),
-        MenuItem("0.4×", action=lambda: setattr(state, "brightness", 0.4)),
-        MenuItem("0.7×", action=lambda: setattr(state, "brightness", 0.7)),
-        MenuItem("1×",   action=lambda: setattr(state, "brightness", 1.0)),
-        MenuItem("2×",   action=lambda: setattr(state, "brightness", 2.0)),
-        MenuItem("4×",   action=lambda: setattr(state, "brightness", 4.0)),
-        MenuItem("7×",   action=lambda: setattr(state, "brightness", 7.0)),
-        MenuItem("10×",  action=lambda: setattr(state, "brightness", 10.0)),
-    ]
-
     def _mode_label() -> str:
         return "Start Streaming" if state.mode == ViewMode.ACCUMULATE else "Start Stacking"
 
     def _toggle_mode() -> None:
         state.mode = ViewMode.ACCUMULATE if state.mode == ViewMode.LIVE else ViewMode.LIVE
 
-    # Telescope submenu — first item shows/selects the active telescope config
+    def _toggle_record() -> None:
+        if recorder is None:
+            return
+        if state.recording:
+            state.recording = False
+            recorder.stop()
+        else:
+            state.recording = True
+            recorder.start()
+
+    def _record_label() -> str:
+        return "Stop Recording" if state.recording else "Record"
+
     if len(telescope_configs) > 1:
-        selector_items = [
+        scope_items = [
             MenuItem(desc, action=lambda cn=cn: on_select_config(cn))
             for cn, desc in telescope_configs
         ]
-        selector_items.append(MenuItem("Back"))
-        scope_item = MenuItem(active_desc_fn, submenu=selector_items)
+        scope_items.append(MenuItem("Back"))
+        scope_entry = MenuItem(active_desc_fn, submenu=scope_items)
     else:
-        scope_item = MenuItem(active_desc_fn)   # informational only
+        scope_entry = MenuItem(active_desc_fn)
 
     telescope_submenu = [
-        scope_item,
+        scope_entry,
         MenuItem("Connect",    action=on_connect),
         MenuItem("Disconnect", action=on_disconnect),
-        MenuItem("Sync",       action=lambda: None),   # placeholder
-        MenuItem("Park",       action=lambda: None),   # placeholder
+        MenuItem("Park",       action=lambda: None),
         MenuItem("Back"),
     ]
 
-    menu = Menu()
-    menu.add(MenuItem("Cancel"))
-    menu.add(MenuItem("Brightness", submenu=brightness_submenu))
-    menu.add(MenuItem(_mode_label, action=_toggle_mode))
-    menu.add(MenuItem("Focus", action=on_start_focus))
-    menu.add(MenuItem("Telescope", submenu=telescope_submenu))
-    menu.add(MenuItem("Quit", action=lambda: pygame.event.post(
-        pygame.event.Event(pygame.QUIT)
-    )))
-    return menu
+    m = Menu()
+    m.add(MenuItem(_mode_label,   action=_toggle_mode))
+    m.add(MenuItem("Telescope",   submenu=telescope_submenu))
+    m.add(MenuItem(_record_label, action=_toggle_record))
+    m.add(MenuItem("Save",        action=on_save))
+    m.add(MenuItem("Focus",       action=on_start_focus))
+    m.add(MenuItem("Quit",        action=on_quit))
+    return m
+
+
+def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc) -> Menu:
+    bin_items = [
+        MenuItem("1×", action=lambda: None),   # TODO: wire to cam.bin
+        MenuItem("2×", action=lambda: None),
+        MenuItem("Back"),
+    ]
+    temp_items = [
+        MenuItem(f"{t}°C", action=lambda t=t: None)  # TODO: wire to cam TEC
+        for t in (0, 5, 10, 15, 20)
+    ]
+    temp_items.append(MenuItem("Back"))
+
+    camera_submenu = [
+        MenuItem("Bin",         submenu=bin_items),
+        MenuItem("Temperature", submenu=temp_items),
+        MenuItem("Set DPC",     action=on_set_dpc),
+        MenuItem("Back"),
+    ]
+
+    m = Menu()
+    m.add(MenuItem("Camera", submenu=camera_submenu))
+    return m
+
+
+def _build_context_menu(
+    near_object: bool,
+    object_name: str,
+    on_focus,
+    on_slew,
+    mount_connected: bool,
+) -> Menu:
+    m = Menu()
+    if near_object:
+        m.add(MenuItem(f"About {object_name}", action=lambda: None))
+    m.add(MenuItem("Focus", action=on_focus))
+    m.add(MenuItem("Slew here", action=on_slew if mount_connected else None))
+    if mount_connected:
+        m.add(MenuItem("SkyMap", action=lambda: None))
+    return m
 
 
 # ---------------------------------------------------------------------------
-# Rendering helpers
+# Rendering
 # ---------------------------------------------------------------------------
 
-def _draw_cursor(surface: pygame.Surface, x: int, y: int) -> None:
-    size = 10
-    pygame.draw.line(surface, GREEN, (x - size, y), (x + size, y), 2)
-    pygame.draw.line(surface, GREEN, (x, y - size), (x, y + size), 2)
+_FONT_CACHE: dict[int, pygame.font.Font] = {}
 
 
-def _render_menu(surface: pygame.Surface, menu: Menu) -> None:
-    w, h = surface.get_size()
-    overlay = pygame.Surface((w, h), pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 180))
-    surface.blit(overlay, (0, 0))
+def _font(size: int) -> pygame.font.Font:
+    if size not in _FONT_CACHE:
+        _FONT_CACHE[size] = pygame.font.SysFont("monospace", size)
+    return _FONT_CACHE[size]
 
-    font  = pygame.font.SysFont("monospace", 30)
-    items = menu.current_items
-    sel   = menu.selection_index
-    row_h = _MENU_ROW_H
-    total = len(items) * row_h
-    y0    = (h - total) // 2
+
+def _draw_icon_star(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """5-pointed star."""
+    cx, cy  = rect.centerx, rect.centery
+    r_out   = rect.height * 0.36
+    r_in    = rect.height * 0.15
+    pts = []
+    for i in range(10):
+        angle = math.radians(-90 + i * 36)
+        r = r_out if i % 2 == 0 else r_in
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    pygame.draw.polygon(surface, color, pts)
+
+
+def _draw_icon_gear(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Gear with 8 teeth."""
+    cx, cy  = rect.centerx, rect.centery
+    r_body  = int(rect.height * 0.28)
+    r_tooth = int(rect.height * 0.38)
+    r_hole  = int(rect.height * 0.12)
+    pygame.draw.circle(surface, color, (cx, cy), r_body)
+    for i in range(8):
+        angle = math.radians(i * 45)
+        x1 = cx + r_body  * math.cos(angle)
+        y1 = cy + r_body  * math.sin(angle)
+        x2 = cx + r_tooth * math.cos(angle)
+        y2 = cy + r_tooth * math.sin(angle)
+        pygame.draw.line(surface, color, (int(x1), int(y1)), (int(x2), int(y2)), max(3, rect.height // 14))
+    pygame.draw.circle(surface, BLACK, (cx, cy), r_hole)
+
+
+def _draw_icon_sliders(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Three horizontal lines with offset slider handles."""
+    cx, cy   = rect.centerx, rect.centery
+    hw       = int(rect.width  * 0.30)   # half-line width
+    spacing  = int(rect.height * 0.22)
+    handles  = [0.4, -0.1, 0.2]          # handle offset from center, normalized to hw
+    r_handle = max(3, rect.height // 12)
+    for i, ho in enumerate(handles):
+        y  = cy + (i - 1) * spacing
+        pygame.draw.line(surface, color, (cx - hw, y), (cx + hw, y), 2)
+        hx = cx + int(ho * hw)
+        pygame.draw.circle(surface, color, (hx, y), r_handle)
+        pygame.draw.circle(surface, BLACK, (hx, y), r_handle - 2)
+
+
+def _render_status_bars(
+    surface: pygame.Surface,
+    layout: dict,
+    state: ViewState,
+    hud_top: str,
+    hud_bot: str,
+    cam_configured: bool,
+    cal_ok: bool,
+    action_active: bool,
+    controls_active: bool,
+    utilities_active: bool,
+) -> None:
+    """Draw both status bars and their icons onto surface."""
+    top = layout["top_bar"]
+    bot = layout["bot_bar"]
+
+    # Bars and corners: black background, dim border
+    for r in (top, bot,
+              layout["corner_tl"], layout["corner_tr"],
+              layout["corner_bl"], layout["corner_br"]):
+        pygame.draw.rect(surface, BLACK, r)
+        pygame.draw.rect(surface, DIM,   r, 1)
+
+    # Icons — bright when their menu is active
+    star_col    = WHITE if action_active   else GREY
+    sliders_col = WHITE if controls_active else GREY
+    gear_col    = WHITE if utilities_active else GREY
+
+    _draw_icon_star   (surface, layout["icon_star"],    star_col)
+    _draw_icon_sliders(surface, layout["icon_sliders"], sliders_col)
+    _draw_icon_gear   (surface, layout["icon_gear"],    gear_col)
+
+    # HUD text in top bar (after the star icon)
+    f = _font(max(9, (layout["status_h"] - 12) // 2))
+    text_x = layout["icon_star"].right + 8
+    text_y = top.y + (top.height - f.get_height()) // 2
+    label = f.render(hud_top, True, GREY)
+    surface.blit(label, (text_x, text_y))
+
+    # Badge area in top bar (before gear icon)
+    badges = []
+    if not cam_configured:
+        badges.append(("Unconfigured", AMBER))
+    if not cal_ok:
+        badges.append(("Uncalibrated", AMBER))
+    if state.recording:
+        badges.append(("● REC", RED))
+    bx = layout["icon_gear"].left - 8
+    for badge_text, badge_col in reversed(badges):
+        bl = f.render(badge_text, True, badge_col)
+        bx -= bl.get_width()
+        surface.blit(bl, (bx, text_y))
+        bx -= 12
+
+    # HUD text in bottom bar (after the sliders icon)
+    text_x = layout["icon_sliders"].right + 8
+    text_y = bot.y + (bot.height - f.get_height()) // 2
+    label = f.render(hud_bot, True, GREY)
+    surface.blit(label, (text_x, text_y))
+
+
+# --- vertical drop-down panel (Action + Utilities menus) --------------------
+
+_MENU_ROW_H = 24
+_MENU_PAD   = 6
+_MENU_W     = 200
+
+
+def _menu_panel_rect(anchor: str, layout: dict) -> pygame.Rect:
+    """Return the bounding rect for an action/utilities menu panel."""
+    central = layout["central"]
+    h = 0   # computed dynamically when drawing
+    if anchor == "left":
+        return pygame.Rect(central.x, central.y, _MENU_W, central.height)
+    else:
+        return pygame.Rect(central.right - _MENU_W, central.y, _MENU_W, central.height)
+
+
+def _render_vertical_menu(
+    surface: pygame.Surface,
+    menu: Menu,
+    anchor: str,
+    layout: dict,
+    cursor_pos: tuple[int, int],
+) -> None:
+    """Render action or utilities menu as a drop-down panel."""
+    items  = menu.current_items
+    if not items:
+        return
+
+    n      = len(items)
+    ph     = n * _MENU_ROW_H + 2 * _MENU_PAD
+    central = layout["central"]
+    pw     = _MENU_W
+
+    if anchor == "left":
+        px = central.x
+    else:
+        px = central.right - pw
+    py = central.y
+
+    # Dim the rest of the image area
+    overlay = pygame.Surface((central.width, central.height), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 160))
+    surface.blit(overlay, (central.x, central.y))
+
+    # Panel background
+    panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+    panel.fill((0, 0, 0, 220))
+    surface.blit(panel, (px, py))
+    pygame.draw.rect(surface, DIM, pygame.Rect(px, py, pw, ph), 1)
+
+    f   = _font(max(9, _MENU_ROW_H - 10))
+    sel = menu.selection_index
+    mx, my = cursor_pos
 
     for i, item in enumerate(items):
-        color = GREEN if i == sel else WHITE
-        label = font.render(item.label_text, True, color)
-        x = w // 2 - label.get_width() // 2
-        surface.blit(label, (x, y0 + i * row_h))
+        ry = py + _MENU_PAD + i * _MENU_ROW_H
+        row_rect = pygame.Rect(px, ry, pw, _MENU_ROW_H)
+        hovered = row_rect.collidepoint(mx, my)
+        if hovered:
+            menu.set_selection(i)
+
+        if i == sel or hovered:
+            pygame.draw.rect(surface, (40, 40, 40), row_rect)
+
+        color = GREEN if (i == sel or hovered) else GREY
+        label = f.render(item.label_text, True, color)
+        surface.blit(label, (px + _MENU_PAD, ry + (_MENU_ROW_H - label.get_height()) // 2))
 
 
-def _render_hud(surface: pygame.Surface, text: str) -> None:
-    font  = pygame.font.SysFont("monospace", 18)
-    label = font.render(text, True, GREEN)
-    surface.blit(label, (8, 8))
+def _vertical_menu_hit(
+    pos: tuple[int, int],
+    menu: Menu,
+    anchor: str,
+    layout: dict,
+) -> int | None:
+    """Return clicked item index, or None if outside the panel."""
+    items   = menu.current_items
+    if not items:
+        return None
+    n       = len(items)
+    ph      = n * _MENU_ROW_H + 2 * _MENU_PAD
+    central = layout["central"]
+    pw      = _MENU_W
+    px      = central.x if anchor == "left" else central.right - pw
+    py      = central.y
+    mx, my  = pos
+
+    if not (px <= mx < px + pw and py <= my < py + ph):
+        return None
+    row = (my - py - _MENU_PAD) // _MENU_ROW_H
+    if 0 <= row < n:
+        return row
+    return None
 
 
-def _render_focus_waiting(surface: pygame.Surface) -> None:
-    font  = pygame.font.SysFont("monospace", 22)
-    label = font.render("FOCUS — click to set point", True, GREEN)
-    x = surface.get_width() // 2 - label.get_width() // 2
-    surface.blit(label, (x, 8))
+# --- Controls panel (horizontal value selectors) ----------------------------
+
+_CTRL_ROW_H    = 30
+_CTRL_LABEL_W  = 110
+_CTRL_VAL_W    = 36
+_CTRL_PAD      = 5
+
+_CONTROLS_ROWS = [
+    ("Stream Exp",   "stream_exposure",  _EXPOSURE_STEPS),
+    ("Stack Exp",    "stack_exposure",   _EXPOSURE_STEPS),
+    ("Brightness",   "brightness",       _BRIGHTNESS_STEPS),
+    ("Sky Sub",      "sky_subtraction",  _SKY_STEPS),
+]
 
 
-def _render_recording(surface: pygame.Surface) -> None:
-    font  = pygame.font.SysFont("monospace", 22)
-    label = font.render("● Recording", True, RED)
-    x = surface.get_width() // 2 - label.get_width() // 2
-    surface.blit(label, (x, 8))
+def _controls_panel_rect(layout: dict) -> pygame.Rect:
+    """Controls panel rises from the bottom of the central region."""
+    central = layout["central"]
+    ph = len(_CONTROLS_ROWS) * _CTRL_ROW_H + 2 * _CTRL_PAD
+    return pygame.Rect(central.x, central.bottom - ph, central.width, ph)
 
 
-def _render_top_right_badges(
+def _render_controls_menu(
     surface: pygame.Surface,
-    badges: list[tuple[str, tuple[int, int, int]]],
+    layout: dict,
+    state: ViewState,
+    cursor_pos: tuple[int, int],
 ) -> None:
-    """Render a stacked column of (text, color) badges anchored to the top-right corner."""
-    font = pygame.font.SysFont("monospace", 22)
-    y = 8
-    for text, color in badges:
-        label = font.render(text, True, color)
-        x = surface.get_width() - label.get_width() - 8
-        surface.blit(label, (x, y))
-        y += label.get_height() + 4
+    central = layout["central"]
+    pr = _controls_panel_rect(layout)
+
+    # Dim upper part of image
+    overlay = pygame.Surface((central.width, central.height), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 160))
+    surface.blit(overlay, (central.x, central.y))
+
+    panel = pygame.Surface((pr.width, pr.height), pygame.SRCALPHA)
+    panel.fill((0, 0, 0, 220))
+    surface.blit(panel, (pr.x, pr.y))
+    pygame.draw.rect(surface, DIM, pr, 1)
+
+    f_lbl  = _font(max(9, _CTRL_ROW_H - 18))
+    f_val  = _font(max(9, _CTRL_ROW_H - 20))
+    mx, my = cursor_pos
+
+    for ri, (label, attr, steps) in enumerate(_CONTROLS_ROWS):
+        ry = pr.y + _CTRL_PAD + ri * _CTRL_ROW_H
+        current = getattr(state, attr)
+
+        # Row label
+        lbl = f_lbl.render(label + ":", True, GREY)
+        surface.blit(lbl, (pr.x + _CTRL_PAD, ry + (_CTRL_ROW_H - lbl.get_height()) // 2))
+
+        # Value chips
+        vx = pr.x + _CTRL_LABEL_W
+        for vi, (vtext, vval) in enumerate(steps):
+            chip = pygame.Rect(vx, ry + _CTRL_PAD, _CTRL_VAL_W - 2, _CTRL_ROW_H - 2 * _CTRL_PAD)
+            selected = (current == vval)
+            hovered  = chip.collidepoint(mx, my)
+
+            bg = (60, 60, 60) if hovered else (30, 30, 30) if selected else BLACK
+            pygame.draw.rect(surface, bg, chip)
+            if selected or hovered:
+                pygame.draw.rect(surface, GREY if selected else DIM, chip, 1)
+
+            color  = WHITE if selected else GREY
+            vlabel = f_val.render(vtext, True, color)
+            surface.blit(vlabel, (
+                chip.x + (chip.width  - vlabel.get_width())  // 2,
+                chip.y + (chip.height - vlabel.get_height()) // 2,
+            ))
+            vx += _CTRL_VAL_W
 
 
-def _render_alert(surface: pygame.Surface, text: str) -> None:
-    font  = pygame.font.SysFont("monospace", 28)
-    label = font.render(text, True, RED)
-    w, h  = surface.get_size()
-    x = w // 2 - label.get_width() // 2
-    y = h // 2 - label.get_height() // 2
-    bg = pygame.Surface((label.get_width() + 20, label.get_height() + 10))
-    bg.fill(BLACK)
-    surface.blit(bg, (x - 10, y - 5))
-    surface.blit(label, (x, y))
+def _controls_hit(
+    pos: tuple[int, int],
+    layout: dict,
+) -> tuple[str, object] | None:
+    """
+    Return (attr_name, new_value) if pos is over a Controls panel value chip.
+    Returns None if pos is outside the panel.
+    """
+    pr = _controls_panel_rect(layout)
+    mx, my = pos
+    if not pr.collidepoint(mx, my):
+        return None
 
+    ri = (my - pr.y - _CTRL_PAD) // _CTRL_ROW_H
+    if ri < 0 or ri >= len(_CONTROLS_ROWS):
+        return None
+    _label, attr, steps = _CONTROLS_ROWS[ri]
+
+    # Find which value chip was clicked
+    vx = pr.x + _CTRL_LABEL_W
+    for vi, (vtext, vval) in enumerate(steps):
+        chip = pygame.Rect(vx, pr.y + _CTRL_PAD + ri * _CTRL_ROW_H,
+                           _CTRL_VAL_W - 2, _CTRL_ROW_H - 2 * _CTRL_PAD)
+        if chip.collidepoint(mx, my):
+            return (attr, vval)
+        vx += _CTRL_VAL_W
+    return None
+
+
+# --- Context menu -----------------------------------------------------------
+
+_CTX_ROW_H = 22
+_CTX_PAD   = 4
+_CTX_W     = 150
+
+
+def _render_context_menu(
+    surface: pygame.Surface,
+    menu: Menu,
+    pos: tuple[int, int],
+    cursor_pos: tuple[int, int],
+    win_w: int,
+    win_h: int,
+) -> None:
+    items = menu.current_items
+    if not items:
+        return
+    ph = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
+    px = min(pos[0], win_w - _CTX_W - 4)
+    py = min(pos[1], win_h - ph - 4)
+
+    panel = pygame.Surface((_CTX_W, ph), pygame.SRCALPHA)
+    panel.fill((0, 0, 0, 230))
+    surface.blit(panel, (px, py))
+    pygame.draw.rect(surface, DIM, pygame.Rect(px, py, _CTX_W, ph), 1)
+
+    f   = _font(max(9, _CTX_ROW_H - 10))
+    sel = menu.selection_index
+    mx, my = cursor_pos
+
+    for i, item in enumerate(items):
+        ry = py + _CTX_PAD + i * _CTX_ROW_H
+        row_rect = pygame.Rect(px, ry, _CTX_W, _CTX_ROW_H)
+        hovered = row_rect.collidepoint(mx, my)
+        if hovered:
+            menu.set_selection(i)
+        if i == sel or hovered:
+            pygame.draw.rect(surface, (40, 40, 40), row_rect)
+        color = GREEN if (i == sel or hovered) else GREY
+        label = f.render(item.label_text, True, color)
+        surface.blit(label, (px + _CTX_PAD, ry + (_CTX_ROW_H - label.get_height()) // 2))
+
+
+def _context_hit(
+    pos: tuple[int, int],
+    menu: Menu,
+    menu_pos: tuple[int, int],
+    win_w: int,
+    win_h: int,
+) -> int | None:
+    items = menu.current_items
+    if not items:
+        return None
+    ph = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
+    px = min(menu_pos[0], win_w - _CTX_W - 4)
+    py = min(menu_pos[1], win_h - ph - 4)
+    mx, my = pos
+    if not (px <= mx < px + _CTX_W and py <= my < py + ph):
+        return None
+    row = (my - py - _CTX_PAD) // _CTX_ROW_H
+    return row if 0 <= row < len(items) else None
+
+
+# --- Misc overlays ----------------------------------------------------------
 
 def _render_hover_label(
     surface: pygame.Surface,
@@ -231,8 +663,7 @@ def _render_hover_label(
 ) -> None:
     if not table:
         return
-    best = None
-    best_d2 = threshold * threshold
+    best, best_d2 = None, threshold * threshold
     for entry in table:
         d2 = (entry["px"] - cursor_x) ** 2 + (entry["py"] - cursor_y) ** 2
         if d2 < best_d2:
@@ -243,19 +674,37 @@ def _render_hover_label(
 
     name = best["name"] or best["type"]
     text = f"{name}  mag {best['mag']:.1f}  {best['type']}"
-    font  = pygame.font.SysFont("monospace", 16)
-    label = font.render(text, True, WHITE)
-
-    x = cursor_x + 16
-    y = cursor_y - 10
-    w, h = surface.get_size()
-    x = min(x, w - label.get_width() - 10)
-    y = max(y, 4)
-
+    f = _font(10)
+    label = f.render(text, True, WHITE)
+    x = min(cursor_x + 16, surface.get_width()  - label.get_width()  - 10)
+    y = max(cursor_y - 10, 4)
     bg = pygame.Surface((label.get_width() + 8, label.get_height() + 4), pygame.SRCALPHA)
     bg.fill((0, 0, 0, 190))
-    surface.blit(bg, (x - 4, y - 2))
+    surface.blit(bg,    (x - 4, y - 2))
     surface.blit(label, (x, y))
+
+
+def _render_focus_waiting(surface: pygame.Surface, win_w: int, top_y: int) -> None:
+    f = _font(12)
+    label = f.render("FOCUS — click to set point", True, GREEN)
+    surface.blit(label, (win_w // 2 - label.get_width() // 2, top_y + 8))
+
+
+def _render_alert(surface: pygame.Surface, text: str, win_w: int, win_h: int) -> None:
+    f = _font(16)
+    label = f.render(text, True, RED)
+    x = win_w // 2 - label.get_width() // 2
+    y = win_h // 2 - label.get_height() // 2
+    bg = pygame.Surface((label.get_width() + 20, label.get_height() + 10))
+    bg.fill(BLACK)
+    surface.blit(bg,    (x - 10, y - 5))
+    surface.blit(label, (x, y))
+
+
+def _draw_cursor(surface: pygame.Surface, x: int, y: int) -> None:
+    size = 10
+    pygame.draw.line(surface, GREEN, (x - size, y), (x + size, y), 2)
+    pygame.draw.line(surface, GREEN, (x, y - size), (x, y + size), 2)
 
 
 def _apply_brightness(image: np.ndarray, brightness: float) -> np.ndarray:
@@ -269,15 +718,19 @@ def _apply_brightness(image: np.ndarray, brightness: float) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--exposure", type=float, default=None,
-                   help="Override streaming start exposure in seconds (default: auto)")
+                   help="Override streaming start exposure in seconds")
     p.add_argument("--vcam", metavar="SUBFOLDER",
-                   help="Replay a recorded session instead of using live hardware. "
-                        "SUBFOLDER is a timestamped folder under record_path in configuration.yaml.")
+                   help="Replay a recorded session instead of live hardware.")
     p.add_argument("--vcam-accel", type=float, default=1.0, metavar="FACTOR",
-                   help="Time-acceleration for vcam playback (default: 1.0 = real-time). "
-                        "E.g. 10 plays a 5-second exposure back in 0.5 s.")
+                   help="Time-acceleration for vcam playback (default: 1.0)")
+    p.add_argument("--fullscreen", action="store_true",
+                   help="Run fullscreen at the native display resolution (default on Pi).")
+    p.add_argument("--window-size", metavar="WxH", default=None,
+                   help="Windowed size override, e.g. 1280x720. "
+                        "Defaults to the display's current resolution.")
     return p.parse_args()
 
 
@@ -288,7 +741,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    # -- load configuration --------------------------------------------------
     try:
         config = load()
     except FileNotFoundError as exc:
@@ -301,29 +753,28 @@ def main() -> None:
     # -- camera setup --------------------------------------------------------
     if args.vcam:
         if config is None or config.record_path is None:
-            logging.error("--vcam requires record_path to be set in configuration.yaml")
+            logging.error("--vcam requires record_path in configuration.yaml")
             sys.exit(1)
         session_path = config.record_path / args.vcam
         if not session_path.is_dir():
             logging.error("Session folder not found: %s", session_path)
             sys.exit(1)
-        # Peek at the catalog to learn camera_id, then resolve bayer_pattern from config
         _vcam_table = scan_folder(session_path)
         if len(_vcam_table) == 0:
-            logging.error("No canonical .tif frames found in %s", session_path)
+            logging.error("No canonical .tif frames in %s", session_path)
             sys.exit(1)
-        _vcam_id = int(_vcam_table.camera_id.iloc[0])
+        _vcam_id  = int(_vcam_table.camera_id.iloc[0])
         _vcam_cfg = config.get_config(_vcam_id) if config else None
         cam_ctx: VirtualCamera | ZwoAsiCamera = VirtualCamera(
             session_path,
-            camera_id   = _vcam_id,
+            camera_id     = _vcam_id,
             bayer_pattern = _vcam_cfg.pattern if _vcam_cfg else None,
-            t_accel     = args.vcam_accel,
+            t_accel       = args.vcam_accel,
         )
     else:
         cameras = list_cameras()
         if not cameras:
-            logging.warning("No ZWO ASI cameras found. Is the camera plugged in?")
+            logging.warning("No ZWO ASI cameras found.")
             sys.exit(1)
         preferred_id = config.preferred_camera_id if config else None
         usb_index = cameras[0]["usb_index"]
@@ -333,40 +784,76 @@ def main() -> None:
                 break
         cam_ctx = ZwoAsiCamera(index=usb_index)
 
-    # -- catalog -------------------------------------------------------------
     catalog = load_catalog(str(_CATALOG_PATH))
-    logging.info("Loaded %d catalog entries", len(catalog))
 
     # -- pygame init ---------------------------------------------------------
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+
+    info = pygame.display.Info()
+    screen_w = info.current_w if info.current_w > 0 else WINDOW_W
+    screen_h = info.current_h if info.current_h > 0 else WINDOW_H
+
+    if args.window_size:
+        try:
+            win_w, win_h = (int(v) for v in args.window_size.lower().split("x"))
+        except ValueError:
+            logging.error("--window-size must be WxH, e.g. 1280x720")
+            sys.exit(1)
+    elif args.fullscreen:
+        win_w, win_h = screen_w, screen_h
+    else:
+        # In windowed mode the OS menu bar / notch / dock eat into the available
+        # height.  Reserve a platform-appropriate margin so the window fits.
+        if sys.platform == "darwin":
+            margin_h = 90   # menu bar (~38 px) + notch headroom + dock
+        elif sys.platform == "win32":
+            margin_h = 48   # taskbar
+        else:
+            margin_h = 0
+        win_w = min(WINDOW_W, screen_w)
+        win_h = min(WINDOW_H, screen_h - margin_h)
+
+    if args.fullscreen:
+        screen = pygame.display.set_mode((win_w, win_h),
+                                         pygame.FULLSCREEN | pygame.NOFRAME)
+    else:
+        screen = pygame.display.set_mode((win_w, win_h))
+
     pygame.display.set_caption(WINDOW_TITLE)
     pygame.mouse.set_visible(True)
     clock = pygame.time.Clock()
 
+    layout = _make_layout(win_w, win_h)
+
     state = ViewState()
 
-    # Mutable refs so menu callbacks can update the active config
     cam_config_ref: list[CameraConfig] = [CameraConfig()]
     fov_ref:        list[float]        = [30.0]
+    mount_holder:   list               = [None]
 
-    # Mount holder
-    mount_holder: list = [None]
+    def _open_menu(name: str) -> None:
+        state.active_menu = name
+        state.menu_open   = True
+
+    def _close_menu() -> None:
+        state.active_menu = None
+        state.menu_open   = False
+        action_menu.reset()
+        utilities_menu.reset()
+        if context_menu_ref[0] is not None:
+            context_menu_ref[0].reset()
 
     def _connect_mount() -> None:
         driver = cam_config_ref[0].mount_driver
         if not driver:
-            logging.warning("No mount_driver set in configuration.yaml for this config")
             return
         try:
             mod = importlib.import_module(f"astrocore.mount.{driver}")
             cls = getattr(mod, "Driver", None)
             if cls is None:
-                logging.warning("Mount module %r has no Driver attribute", driver)
                 return
             mount_holder[0] = cls()
             state.mount_connected = True
-            logging.info("Mount connected via %s", driver)
         except Exception as exc:
             logging.warning("Mount connect failed: %s", exc)
 
@@ -377,23 +864,14 @@ def main() -> None:
         state.mount_connected = False
 
     with cam_ctx as cam:
-
-        # Warn if the connected camera has no entry in configuration.yaml.
-        # camera_id == 0 means the EEPROM was never written (run set_camera_id.py).
         _cam_configured = config is not None and cam.info.camera_id in config.camera_ids()
         if not _cam_configured:
             id_note = " (EEPROM not set)" if cam.info.camera_id == 0 else ""
-            logging.warning(
-                "Camera ID %d%s not found in configuration.yaml — running with defaults. "
-                "Run set_camera_id.py to register this camera.",
-                cam.info.camera_id, id_note,
-            )
+            logging.warning("Camera ID %d%s not in configuration.yaml", cam.info.camera_id, id_note)
 
-        # Apply configuration to camera
         if config is not None:
             cam_config = config.get_config(cam.info.camera_id)
             cam_config_ref[0] = cam_config
-
             if cam_config.bin > 1:
                 cam.bin = cam_config.bin
             if cam_config.gain is not None:
@@ -403,25 +881,15 @@ def main() -> None:
             if cam_config.pattern is not None:
                 from dataclasses import replace as _dc_replace
                 cam._info = _dc_replace(cam.info, bayer_pattern=cam_config.pattern)
-
-            # Stamp telescope info onto all subsequent frames
             cam.meta.telescope_description = cam_config.telescope_description
             cam.meta.focal_length_mm       = cam_config.focal_length_mm
             cam.meta.Lat = lat
             cam.meta.Lon = lon
-
-            # Compute FOV from focal length + hardware pixel size
             roi_w = cam_config.effective_roi(
-                cam.info.sensor_width_px, cam.info.sensor_height_px
-            )[2]
+                cam.info.sensor_width_px, cam.info.sensor_height_px)[2]
             fov_ref[0] = compute_hfov(
-                cam_config.focal_length_mm,
-                cam.info.pixel_size_um,
-                roi_w,
+                cam_config.focal_length_mm, cam.info.pixel_size_um, roi_w,
             ) or fov_ref[0]
-
-            if config.cal_path is not None:
-                pass  # cal_path applied to grabber below
 
         grabber = FrameGrabber(cam)
         grabber.pattern = cam.info.bayer_pattern
@@ -430,28 +898,24 @@ def main() -> None:
 
         recorder: Recorder | None = (
             None if args.vcam
-            else Recorder(config.record_path) if config is not None and config.record_path is not None
+            else Recorder(config.record_path)
+            if config is not None and config.record_path is not None
             else None
         )
 
-        # Telescope config switching from menu
         def _on_select_config(config_name: str) -> None:
             if config is None:
                 return
             new_cfg = config.get_config(cam.info.camera_id, config_name)
             cam_config_ref[0] = new_cfg
             roi_w = new_cfg.effective_roi(
-                cam.info.sensor_width_px, cam.info.sensor_height_px
-            )[2]
+                cam.info.sensor_width_px, cam.info.sensor_height_px)[2]
             fov_ref[0] = compute_hfov(
-                new_cfg.focal_length_mm, cam.info.pixel_size_um, roi_w
-            ) or fov_ref[0]
+                new_cfg.focal_length_mm, cam.info.pixel_size_um, roi_w) or fov_ref[0]
             cam.meta.telescope_description = new_cfg.telescope_description
             cam.meta.focal_length_mm       = new_cfg.focal_length_mm
             if new_cfg.gain is not None:
                 cam.gain = new_cfg.gain
-            logging.info("Switched to %s (focal length %.0f mm)",
-                         new_cfg.telescope_description, new_cfg.focal_length_mm)
 
         telescope_configs = (
             config.telescope_descriptions(cam.info.camera_id) if config else []
@@ -462,58 +926,73 @@ def main() -> None:
                 state.recording = False
                 recorder.stop()
             state.focus_state = FocusState.WAITING
-            state.mode = ViewMode.LIVE
+            state.mode        = ViewMode.LIVE
+            _close_menu()
 
-        menu = _build_menu(
+        def _on_save() -> None:
+            # TODO: save stacked image to disk
+            _close_menu()
+
+        def _on_set_dpc() -> None:
+            # TODO: trigger DPC acquisition
+            _close_menu()
+
+        def _on_quit() -> None:
+            pygame.event.post(pygame.event.Event(pygame.QUIT))
+
+        action_menu = _build_action_menu(
             state,
-            on_connect      = _connect_mount,
-            on_disconnect   = _disconnect_mount,
-            on_start_focus  = _start_focus_mode,
+            on_connect       = _connect_mount,
+            on_disconnect    = _disconnect_mount,
+            on_start_focus   = _start_focus_mode,
             telescope_configs = telescope_configs,
             on_select_config  = _on_select_config,
             active_desc_fn    = lambda: cam_config_ref[0].telescope_description or "Telescope",
+            recorder         = recorder,
+            on_save          = _on_save,
+            on_quit          = _on_quit,
         )
-        dispatcher = InputDispatcher(state, menu, zoom_step=1.2, zoom_min=1.0, zoom_max=8.0)
+
+        utilities_menu = _build_utilities_menu(cam, cam_config_ref, _on_set_dpc)
+
+        context_menu_ref: list[Menu | None] = [None]
+
+        dispatcher = InputDispatcher(
+            state, action_menu, zoom_step=1.2, zoom_min=1.0, zoom_max=8.0,
+        )
 
         actual_gain = cam.gain
         ae        = StreamExposure(start=args.exposure if args.exposure is not None else 0.1)
         stacker   = Stacker()
         stack_seq = ExposureSequence(STACKING_SEQUENCE)
 
-        # Background frame-grab thread
+        # Camera image dimensions — determined on first frame
+        cam_w_ref: list[int] = [cam.info.sensor_width_px  or win_w]
+        cam_h_ref: list[int] = [cam.info.sensor_height_px or win_h]
+        img_rect   = _image_rect(cam_w_ref[0], cam_h_ref[0], layout["central"])
+
         _frame_queue: queue.Queue = queue.Queue(maxsize=2)
         _exposure_ref = [int(ae.current * 1_000_000)]
-        _focus_hardware_roi: bool = False   # True when ZWO hardware ROI is active for focus
+        _focus_hardware_roi: bool = False
 
         def _make_grab_worker(stop_event: threading.Event) -> threading.Thread:
-            """Return a new grab thread bound to *stop_event*.
-
-            Each call creates a fresh Event that is never cleared, so a thread that
-            outlives its intended lifetime (join timeout) remains stopped — it holds
-            a reference to its own (already-set) event and cannot be un-stopped by
-            a subsequent _restart_grab() call.
-            """
             def _worker() -> None:
-                configured_us: int | None = None   # exposure last confirmed on camera
+                configured_us: int | None = None
                 while not stop_event.is_set():
                     exp_us = _exposure_ref[0]
-                    # Only pass exposure_us when it differs from what is already
-                    # configured.  Passing None skips the get_control_value SDK
-                    # call that would otherwise happen on every WORKING iteration.
                     result = grabber.grab_frame(
-                        exposure_us  = exp_us if exp_us != configured_us else None,
-                        dark         = not _focus_hardware_roi and grabber.cal_path is not None,
-                        flat         = not _focus_hardware_roi and grabber.cal_path is not None,
-                        dpc          = False,
-                        demosaic     = grabber.pattern is not None,
+                        exposure_us = exp_us if exp_us != configured_us else None,
+                        dark        = not _focus_hardware_roi and grabber.cal_path is not None,
+                        flat        = not _focus_hardware_roi and grabber.cal_path is not None,
+                        dpc         = False,
+                        demosaic    = grabber.pattern is not None,
                     )
                     if result.status == GrabStatus.WORKING:
-                        time.sleep(0.001)   # yield GIL; don't flood SDK with status polls
+                        time.sleep(0.001)
                         continue
                     if result.status == GrabStatus.STARTED:
                         configured_us = exp_us
                         continue
-                    # SUCCESS, TIMEOUT, or FAILED — enqueue for the main loop
                     configured_us = exp_us
                     if (result.status == GrabStatus.SUCCESS
                             and recorder is not None
@@ -525,33 +1004,27 @@ def main() -> None:
                         pass
             return threading.Thread(target=_worker, daemon=True)
 
-        _stop_grab = threading.Event()
+        _stop_grab  = threading.Event()
         _grab_thread = _make_grab_worker(_stop_grab)
         _grab_thread.start()
 
         _focus_roi_saved: tuple[int, int, int, int] | None = None
 
         def _stop_and_reset_grab() -> None:
-            """Signal the current grab thread to stop and wait for it to exit.
-
-            The stop event is NOT cleared after join so that a thread which outlives
-            the timeout remains permanently stopped (it holds a reference to its own
-            set event).
-            """
             _stop_grab.set()
             _grab_thread.join(timeout=5.0)
             grabber.reset()
 
         def _restart_grab() -> None:
             nonlocal _stop_grab, _grab_thread
-            _stop_grab = threading.Event()          # new event; old thread keeps its (set) one
+            _stop_grab  = threading.Event()
             _grab_thread = _make_grab_worker(_stop_grab)
             _grab_thread.start()
 
         def _enter_focus_active() -> None:
             nonlocal _focus_roi_saved, _focus_hardware_roi
             if not isinstance(cam, ZwoAsiCamera):
-                return   # VirtualCamera: fall back to software crop
+                return
             _stop_and_reset_grab()
             saved = cam.get_roi()
             _focus_roi_saved = saved
@@ -573,20 +1046,20 @@ def main() -> None:
                 x, y, w, h = _focus_roi_saved
                 cam.set_roi(x=x, y=y, width=w, height=h)
                 _focus_hardware_roi = False
-                _focus_roi_saved = None
+                _focus_roi_saved    = None
                 _restart_grab()
             state.focus_state = FocusState.OFF
-            state.mode = ViewMode.LIVE
+            state.mode        = ViewMode.LIVE
 
         last_surface: pygame.Surface | None = None
-        frame_count  = 0
-        fps_display  = 0.0
-        t_last_frame = time.monotonic()
-        prev_mode    = state.mode
-        _cal_ok      = True   # updated from grab results; False → show Uncalibrated notice
+        frame_count   = 0
+        fps_display   = 0.0
+        t_last_frame  = time.monotonic()
+        prev_mode     = state.mode
+        _cal_ok       = True
 
         t_last_move = time.monotonic()
-        cursor_pos  = (WINDOW_W // 2, WINDOW_H // 2)
+        cursor_pos  = (win_w // 2, win_h // 2)
 
         alert_timer = 0.0
         ov_table: list[dict] = []
@@ -605,7 +1078,12 @@ def main() -> None:
 
                 elif event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_q, pygame.K_ESCAPE):
-                        running = False
+                        if state.active_menu:
+                            _close_menu()
+                        elif state.focus_state != FocusState.OFF:
+                            _exit_focus()
+                        else:
+                            running = False
                     elif state.focus_state != FocusState.OFF:
                         _exit_focus()
                     elif event.key == pygame.K_f:
@@ -613,7 +1091,7 @@ def main() -> None:
                             state.recording = False
                             recorder.stop()
                         state.focus_state = FocusState.WAITING
-                        state.mode = ViewMode.LIVE
+                        state.mode        = ViewMode.LIVE
                     elif event.key == pygame.K_r and recorder is not None:
                         if state.recording:
                             state.recording = False
@@ -626,35 +1104,118 @@ def main() -> None:
                     cursor_pos  = event.pos
                     t_last_move = time.monotonic()
                     dispatcher.on_mouse_move(*event.pos)
-                    if state.menu_open:
-                        items = menu.current_items
-                        if items:
-                            total = len(items) * _MENU_ROW_H
-                            y0 = (WINDOW_H - total) // 2
-                            cy = event.pos[1]
-                            if y0 <= cy < y0 + total:
-                                menu.set_selection((cy - y0) // _MENU_ROW_H)
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
+                    mx, my = event.pos
+
                     if state.focus_state == FocusState.WAITING:
-                        state.focus_center_x = event.pos[0] / WINDOW_W
-                        state.focus_center_y = event.pos[1] / WINDOW_H
+                        state.focus_center_x = mx / win_w
+                        state.focus_center_y = my / win_h
                         _enter_focus_active()
                         state.focus_state = FocusState.ACTIVE
+
                     elif state.focus_state == FocusState.ACTIVE:
                         _exit_focus()
-                    else:
-                        if event.button == 1:
-                            dispatcher.on_left_click()
-                        elif event.button == 2:
-                            if dispatcher.on_middle_click():
-                                alert_timer = ALERT_DURATION
-                        elif event.button == 3:
-                            dispatcher.on_right_click()
+
+                    elif event.button == 1:
+                        # --- Left-click routing ---
+                        active = state.active_menu
+
+                        if active == "action":
+                            idx = _vertical_menu_hit(event.pos, action_menu, "left", layout)
+                            if idx is not None:
+                                action_menu.set_selection(idx)
+                                if action_menu.select():
+                                    _close_menu()
+                            else:
+                                _close_menu()
+
+                        elif active == "utilities":
+                            idx = _vertical_menu_hit(event.pos, utilities_menu, "right", layout)
+                            if idx is not None:
+                                utilities_menu.set_selection(idx)
+                                if utilities_menu.select():
+                                    _close_menu()
+                            else:
+                                _close_menu()
+
+                        elif active == "controls":
+                            hit = _controls_hit(event.pos, layout)
+                            if hit is not None:
+                                attr, val = hit
+                                setattr(state, attr, val)
+                                # Don't close controls menu on select — user likely wants to tweak
+                            else:
+                                _close_menu()
+
+                        elif active == "context":
+                            ctx = context_menu_ref[0]
+                            if ctx is not None:
+                                idx = _context_hit(event.pos, ctx, state.context_menu_pos,
+                                                   win_w, win_h)
+                                if idx is not None:
+                                    ctx.set_selection(idx)
+                                    ctx.select()
+                            _close_menu()
+
+                        else:
+                            # No menu open — check icon hits, then toggle
+                            if layout["icon_star"].collidepoint(mx, my):
+                                action_menu.reset()
+                                _open_menu("action")
+                            elif layout["icon_gear"].collidepoint(mx, my):
+                                utilities_menu.reset()
+                                _open_menu("utilities")
+                            elif layout["icon_sliders"].collidepoint(mx, my):
+                                _open_menu("controls")
+                            else:
+                                # Toggle Stream / Stack
+                                if state.mode == ViewMode.LIVE:
+                                    state.mode = ViewMode.ACCUMULATE
+                                else:
+                                    state.mode = ViewMode.LIVE
+
+                    elif event.button == 3:
+                        # --- Right-click: context menu ---
+                        if state.active_menu:
+                            _close_menu()
+                        else:
+                            # Determine if cursor is near a catalog object
+                            near = None
+                            for entry in ov_table:
+                                d2 = (entry["px"] - mx) ** 2 + (entry["py"] - my) ** 2
+                                if d2 < 25 * 25:
+                                    near = entry
+                                    break
+
+                            def _slew_to_cursor() -> None:
+                                if mount_holder[0] is not None:
+                                    alert_timer = ALERT_DURATION
+
+                            context_menu_ref[0] = _build_context_menu(
+                                near_object  = near is not None,
+                                object_name  = near["name"] if near else "",
+                                on_focus     = _start_focus_mode,
+                                on_slew      = _slew_to_cursor,
+                                mount_connected = state.mount_connected,
+                            )
+                            state.context_menu_pos = event.pos
+                            _open_menu("context")
+
+                    elif event.button == 2:
+                        if dispatcher.on_middle_click():
+                            alert_timer = ALERT_DURATION
 
                 elif event.type == pygame.MOUSEWHEEL:
                     if state.focus_state == FocusState.OFF:
-                        dispatcher.on_scroll(event.y)
+                        if state.active_menu in (None, "controls"):
+                            dispatcher.on_scroll(event.y)   # zoom
+                        else:
+                            # Scroll navigates action / utilities menus
+                            if state.active_menu == "action":
+                                action_menu.scroll(-event.y)
+                            elif state.active_menu == "utilities":
+                                utilities_menu.scroll(-event.y)
 
             # -- mode change --------------------------------------------------
             if state.mode != prev_mode:
@@ -668,12 +1229,19 @@ def main() -> None:
                     stack_seq.reset()
                 prev_mode = state.mode
 
+            # -- exposure control ---------------------------------------------
+            if state.mode == ViewMode.LIVE:
+                if state.stream_exposure is not None:
+                    _exposure_ref[0] = int(state.stream_exposure * 1_000_000)
+                else:
+                    _exposure_ref[0] = int(ae.current * 1_000_000)
+            else:
+                if state.stack_exposure is not None:
+                    _exposure_ref[0] = int(state.stack_exposure * 1_000_000)
+                else:
+                    _exposure_ref[0] = int(stack_seq.current * 1_000_000)
+
             # -- grab frame ---------------------------------------------------
-            _exposure_ref[0] = (
-                int(ae.current * 1_000_000)
-                if state.mode == ViewMode.LIVE
-                else int(stack_seq.current * 1_000_000)
-            )
             try:
                 result = _frame_queue.get_nowait()
             except queue.Empty:
@@ -684,58 +1252,68 @@ def main() -> None:
                 fps_display  = 1.0 / max(now - t_last_frame, 1e-6)
                 t_last_frame = now
                 frame_count += 1
+                fdata = result.frame.data
+
+                # Update image rect from actual frame dimensions
+                fh, fw = fdata.shape[:2]
+                if fw != cam_w_ref[0] or fh != cam_h_ref[0]:
+                    cam_w_ref[0] = fw
+                    cam_h_ref[0] = fh
+                    img_rect = _image_rect(fw, fh, layout["central"])
+
                 if state.focus_state == FocusState.OFF:
                     _cal_ok = result.calibrated
 
                 if state.focus_state == FocusState.ACTIVE:
                     if _focus_hardware_roi:
-                        # Camera is delivering the 200×200 ROI directly
-                        data8 = stretch_to_uint8(result.frame.data)
+                        data8 = stretch_to_uint8(fdata)
                     else:
-                        # VirtualCamera fallback: software crop from full frame
-                        h, w = result.frame.data.shape[:2]
+                        h, w = fdata.shape[:2]
                         cx = int(state.focus_center_x * w)
                         cy = int(state.focus_center_y * h)
-                        x1 = max(0, cx - FOCUS_ROI_HALF)
-                        y1 = max(0, cy - FOCUS_ROI_HALF)
-                        x2 = min(w, cx + FOCUS_ROI_HALF)
-                        y2 = min(h, cy + FOCUS_ROI_HALF)
-                        data8 = stretch_to_uint8(result.frame.data[y1:y2, x1:x2])
+                        x1, y1 = max(0, cx - FOCUS_ROI_HALF), max(0, cy - FOCUS_ROI_HALF)
+                        x2, y2 = min(w, cx + FOCUS_ROI_HALF), min(h, cy + FOCUS_ROI_HALF)
+                        data8 = stretch_to_uint8(fdata[y1:y2, x1:x2])
                     last_surface = pygame.transform.smoothscale(
-                        to_surface(data8), (WINDOW_W, WINDOW_H)
-                    )
+                        to_surface(data8), (img_rect.width, img_rect.height))
+
                 elif state.mode == ViewMode.LIVE:
-                    ae.update(result.frame.data)
-                    data8 = stretch_to_uint8(result.frame.data)
+                    ae.update(fdata)
+                    data8 = stretch_to_uint8(fdata)
                     data8 = _apply_brightness(data8, state.brightness)
                     last_surface = pygame.transform.smoothscale(
-                        to_surface(data8), (WINDOW_W, WINDOW_H)
-                    )
+                        to_surface(data8), (img_rect.width, img_rect.height))
+
                 else:
-                    stacker.add_frame(result.frame.data, stack_seq.current)
-                    stack_seq.advance()
+                    stacker.add_frame(fdata, stack_seq.current)
+                    if state.stack_exposure is None:
+                        stack_seq.advance()
 
             if state.mode == ViewMode.ACCUMULATE:
-                display8 = stacker.get_display_frame()
+                display8 = stacker.get_display_frame(sky_sub_scale=state.sky_subtraction)
                 if display8 is not None:
-                    display8 = _apply_brightness(display8, state.brightness)
-                    img_surface  = to_surface(display8)
+                    display8     = _apply_brightness(display8, state.brightness)
                     last_surface = pygame.transform.smoothscale(
-                        img_surface, (WINDOW_W, WINDOW_H)
-                    )
+                        to_surface(display8), (img_rect.width, img_rect.height))
 
             # -- render -------------------------------------------------------
+            screen.fill(BLACK)
+
+            # Central region background
+            pygame.draw.rect(screen, BLACK, layout["central"])
+
             if last_surface is not None:
-                screen.blit(last_surface, (0, 0))
+                screen.blit(last_surface, img_rect.topleft)
                 if state.all_sky_mode:
-                    dark = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+                    dark = pygame.Surface((img_rect.width, img_rect.height), pygame.SRCALPHA)
                     dark.fill((0, 0, 0, 180))
-                    screen.blit(dark, (0, 0))
+                    screen.blit(dark, img_rect.topleft)
             else:
-                screen.fill(BLACK)
-                font  = pygame.font.SysFont("monospace", 24)
-                label = font.render("Waiting for first frame...", True, DIM)
-                screen.blit(label, (WINDOW_W // 2 - 150, WINDOW_H // 2))
+                f = _font(14)
+                label = f.render("Waiting for first frame...", True, DIM)
+                cx = layout["central"].centerx - label.get_width() // 2
+                cy = layout["central"].centery - label.get_height() // 2
+                screen.blit(label, (cx, cy))
 
             # Sky overlay
             if state.overlay_active and mount_holder[0] is not None:
@@ -747,66 +1325,79 @@ def main() -> None:
                         fov_deg     = fov_ref[0],
                         alt_deg     = alt_deg,
                         az_deg      = az_deg,
-                        image_shape = (WINDOW_H, WINDOW_W),
+                        image_shape = (img_rect.height, img_rect.width),
                         lat_deg     = lat,
                         lon_deg     = lon,
                     )
                     ov_surf = pygame.image.frombuffer(
-                        ov_arr.tobytes(), (WINDOW_W, WINDOW_H), "RGBA"
-                    )
-                    screen.blit(ov_surf, (0, 0))
+                        ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
+                    screen.blit(ov_surf, img_rect.topleft)
                 except Exception as exc:
                     logging.warning("Overlay error: %s", exc)
-
                 _render_hover_label(screen, ov_table, *cursor_pos)
 
-            # HUD
+            # Focus waiting crosshair
+            if state.focus_state == FocusState.WAITING:
+                _render_focus_waiting(screen, win_w, layout["central"].y)
+                _draw_cursor(screen, *cursor_pos)
+
+            # Menus
+            if state.active_menu == "action":
+                _render_vertical_menu(screen, action_menu, "left", layout, cursor_pos)
+            elif state.active_menu == "utilities":
+                _render_vertical_menu(screen, utilities_menu, "right", layout, cursor_pos)
+            elif state.active_menu == "controls":
+                _render_controls_menu(screen, layout, state, cursor_pos)
+            elif state.active_menu == "context" and context_menu_ref[0] is not None:
+                _render_context_menu(screen, context_menu_ref[0],
+                                     state.context_menu_pos, cursor_pos,
+                                     win_w, win_h)
+
+            # Alert overlay
+            if alert_timer > 0:
+                _render_alert(screen, "Caution: Mount is moving", win_w, win_h)
+
+            # Status bars (drawn last so they sit on top)
             if state.focus_state == FocusState.ACTIVE:
-                hud = (
-                    f"FOCUS  exp={ae.current:.4g}s  "
-                    f"gain={actual_gain}  fps={fps_display:.1f}  "
-                    f"— click or any key to exit"
+                hud_top = (
+                    f"FOCUS  exp={ae.current:.4g}s  gain={actual_gain}  "
+                    f"fps={fps_display:.1f}  — click or any key to exit"
                 )
+                hud_bot = ""
             elif state.mode == ViewMode.ACCUMULATE:
-                hud = (
-                    f"STACK  exp={stack_seq.current:.4g}s  "
-                    f"gain={actual_gain}  "
-                    f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  t={stacker.t_accum:.1f}s  "
+                hud_top = (
+                    f"STACK  exp={stack_seq.current:.4g}s  gain={actual_gain}"
+                )
+                hud_bot = (
+                    f"frames={stacker.frame_count}  skip={stacker.skipped_count}  "
+                    f"t={stacker.t_accum:.1f}s  "
                     f"{cam_config_ref[0].telescope_description}"
                 )
             else:
-                hud = (
-                    f"LIVE  exp={ae.current:.4g}s  "
-                    f"gain={actual_gain}  "
-                    f"fps={fps_display:.1f}  frames={frame_count}  "
+                hud_top = (
+                    f"LIVE  exp={ae.current:.4g}s  gain={actual_gain}  "
+                    f"fps={fps_display:.1f}"
+                )
+                hud_bot = (
+                    f"frames={frame_count}  "
                     f"{cam_config_ref[0].telescope_description}"
                 )
-            _render_hud(screen, hud)
-            if state.focus_state == FocusState.WAITING:
-                _render_focus_waiting(screen)
-                _draw_cursor(screen, *cursor_pos)
-            if state.recording:
-                _render_recording(screen)
-            _top_right: list[tuple[str, tuple[int, int, int]]] = []
-            if not _cam_configured:
-                _top_right.append(("Unconfigured", AMBER))
-            if not _cal_ok and state.focus_state == FocusState.OFF:
-                _top_right.append(("Uncalibrated", AMBER))
-            if _top_right:
-                _render_top_right_badges(screen, _top_right)
 
-            if state.menu_open:
-                _render_menu(screen, menu)
-
-            if alert_timer > 0:
-                _render_alert(screen, "Caution: Mount is moving")
+            _render_status_bars(
+                screen, layout, state,
+                hud_top, hud_bot,
+                cam_configured = _cam_configured,
+                cal_ok         = _cal_ok,
+                action_active    = state.active_menu == "action",
+                controls_active  = state.active_menu == "controls",
+                utilities_active = state.active_menu == "utilities",
+            )
 
             cursor_visible = (
-                state.menu_open
-                or (
-                    state.focus_state == FocusState.OFF
-                    and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY
-                )
+                state.active_menu is not None
+                or state.focus_state == FocusState.WAITING
+                or (state.focus_state == FocusState.OFF
+                    and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY)
             )
             pygame.mouse.set_visible(cursor_visible)
 

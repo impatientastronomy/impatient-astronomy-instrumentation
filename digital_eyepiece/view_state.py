@@ -41,14 +41,23 @@ class ViewState:
     active_camera_index is the index into the list of connected FrameGrabbers.
     The InputDispatcher (via MultiCamZoom) updates this when the user zooms
     out past the current camera's native FOV.
+
+    Menus
+    -----
+    active_menu names which panel is open: 'action', 'controls', 'utilities',
+    'context', or None. menu_open is kept for dispatcher/test compatibility.
     """
     mode: ViewMode = ViewMode.LIVE
     zoom_level: float = 1.0
     zoom_center_x: float = 0.5   # normalized [0, 1]
     zoom_center_y: float = 0.5   # normalized [0, 1]
     brightness: float = 1.0
+    sky_subtraction: float = 1.0        # multiplier on the auto-computed skyco
+    stream_exposure: float | None = None  # None = auto-exposure algorithm
+    stack_exposure: float | None = None   # None = STACKING_SEQUENCE ramp
     active_camera_index: int = 0
-    menu_open: bool = False
+    active_menu: str | None = None      # 'action' | 'controls' | 'utilities' | 'context' | None
+    menu_open: bool = False             # kept for dispatcher / test compatibility
     overlay_active: bool = False
     overlay_zoom: float = 1.0
     mount_connected: bool = False
@@ -57,3 +66,4 @@ class ViewState:
     focus_state: FocusState = FocusState.OFF
     focus_center_x: float = 0.5   # normalized [0, 1] in window coords at time of click
     focus_center_y: float = 0.5
+    context_menu_pos: tuple[int, int] = (0, 0)  # screen position of context menu

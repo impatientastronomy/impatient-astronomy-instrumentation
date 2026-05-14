@@ -162,7 +162,9 @@ class InputDispatcher:
     # -- internal helpers ------------------------------------------------------
 
     def _context(self) -> ScrollContext:
-        if self._state.menu_open:
+        # active_menu is the authoritative flag; fall back to menu_open for tests
+        menu_active = getattr(self._state, "active_menu", None) or self._state.menu_open
+        if menu_active:
             return ScrollContext.MENU
         if self._state.overlay_active:
             return ScrollContext.OVERLAY

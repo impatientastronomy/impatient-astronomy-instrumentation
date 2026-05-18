@@ -10,7 +10,8 @@
       "Bash(python -m pytest astrocore/tests/ -x -q)",
       "Bash(uv *)",
       "Bash(unset ASI_LIB)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(xargs ls)"
     ]
   }
 }

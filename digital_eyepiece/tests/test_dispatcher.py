@@ -334,3 +334,141 @@ class TestMultiCamIntegration:
         dispatcher.register_multi_cam(mock_cam)
         dispatcher.on_scroll(1)
         mock_cam.step_out.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cursor-centred zoom
+# ---------------------------------------------------------------------------
+
+class _FakeRect:
+    """Minimal pygame.Rect substitute for tests."""
+    def __init__(self, x, y, width, height):
+        self.x, self.y, self.width, self.height = x, y, width, height
+
+
+class TestCursorCentredZoom:
+    def _make_dispatcher_with_rect(self, state, menu, rect):
+        d = InputDispatcher(state, menu, zoom_step=2.0, zoom_min=1.0, zoom_max=8.0)
+        d.set_img_rect(rect)
+        return d
+
+    def test_zoom_at_centre_does_not_shift_center(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_scroll(1, pos=(400, 300))  # cursor at centre
+        assert state.zoom_center_x == pytest.approx(0.5, abs=1e-6)
+        assert state.zoom_center_y == pytest.approx(0.5, abs=1e-6)
+
+    def test_zoom_in_at_right_shifts_center_right(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_scroll(1, pos=(800, 300))  # cursor at right edge
+        # center should shift towards the right
+        assert state.zoom_center_x > 0.5
+
+    def test_zoom_in_at_top_left_shifts_center_up_left(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_scroll(1, pos=(0, 0))  # cursor at top-left
+        assert state.zoom_center_x < 0.5
+        assert state.zoom_center_y < 0.5
+
+    def test_zoom_center_clamped_to_bounds(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_scroll(1, pos=(800, 300))  # push toward right edge at zoom 1→2
+        assert state.zoom_center_x <= 1.0 - 0.5 / state.zoom_level
+        assert state.zoom_center_x >= 0.5 / state.zoom_level
+
+    def test_scroll_without_pos_does_not_move_center(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_center_x = 0.7
+        state.zoom_center_y = 0.4
+        d.on_scroll(1)  # no pos
+        # center unchanged (no cursor info)
+        assert state.zoom_center_x == pytest.approx(0.7)
+        assert state.zoom_center_y == pytest.approx(0.4)
+
+    def test_zoom_out_to_min_resets_center(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 1.0
+        state.zoom_center_x = 0.7
+        state.zoom_center_y = 0.3
+        d.on_scroll(-1)  # zoom out past min
+        assert state.zoom_level == pytest.approx(1.0)
+        assert state.zoom_center_x == pytest.approx(0.5)
+        assert state.zoom_center_y == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Right-drag pan
+# ---------------------------------------------------------------------------
+
+class TestRightDragPan:
+    def _make_dispatcher_with_rect(self, state, menu, rect):
+        d = InputDispatcher(state, menu, zoom_step=2.0, zoom_min=1.0, zoom_max=8.0)
+        d.set_img_rect(rect)
+        return d
+
+    def test_small_move_is_a_click(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(402, 301, right_held=True)  # 3px — below threshold
+        assert d.on_right_button_up() is True
+
+    def test_large_move_is_a_drag(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(420, 300, right_held=True)  # 20px — above threshold
+        assert d.on_right_button_up() is False
+
+    def test_pan_moves_zoom_center(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 2.0
+        state.zoom_center_x = 0.5
+        state.zoom_center_y = 0.5
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(440, 300, right_held=True)  # drag 40px right
+        # Image moves right → source window moves left → zoom_center_x decreases
+        assert state.zoom_center_x < 0.5
+
+    def test_pan_constrained_to_image_extents(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 2.0
+        d.on_right_button_down(400, 300)
+        # Huge pan to the right
+        d.on_mouse_move(400 + 10000, 300, right_held=True)
+        assert state.zoom_center_x >= 0.5 / state.zoom_level
+
+    def test_pan_no_effect_at_zoom_1(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 1.0
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(450, 300, right_held=True)
+        assert state.zoom_center_x == pytest.approx(0.5)
+        assert state.zoom_center_y == pytest.approx(0.5)
+
+    def test_pan_no_effect_when_menu_open(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 2.0
+        state.menu_open = True
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(450, 300, right_held=True)
+        assert state.zoom_center_x == pytest.approx(0.5)
+
+    def test_drag_tracking_resets_after_button_up(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(450, 300, right_held=True)
+        d.on_right_button_up()
+        assert d._right_drag_start is None
+        assert d._right_drag_total == pytest.approx(0.0)

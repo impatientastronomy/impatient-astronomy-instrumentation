@@ -15,6 +15,7 @@ dependencies = [
     "PyYAML>=6",
     "tifffile>=2024",
     "zwoasi>=0.2",
+    "qrcode>=7",
 ]
 
 [tool.setuptools.packages.find]

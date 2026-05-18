@@ -95,8 +95,8 @@ def _acquire_camera(
             # Apply settings from configuration so darks match science frames.
             if cam_config.gain is not None:
                 cam.gain = cam_config.gain
-            if cam_config.offset is not None:
-                cam.offset = cam_config.offset
+            if cam_config.data_offset is not None:
+                cam.offset = cam_config.data_offset
             cam.flip = FlipMode(cam_config.flip)
             # Full-sensor ROI at the configured bin — no x/y offset.
             cam.set_roi(x=0, y=0, width=None, height=None, bin=cam_config.bin)

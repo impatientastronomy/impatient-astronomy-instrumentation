@@ -1,0 +1,180 @@
+NAME,TYPE,LAT,LON,DIAMETER_KM
+Mare Tranquillitatis,Mare,8.0,31.4,873
+Mare Serenitatis,Mare,28.0,17.5,707
+Mare Imbrium,Mare,32.8,-15.6,1123
+Oceanus Procellarum,Oceanus,18.4,-57.4,2568
+Mare Crisium,Mare,17.0,59.1,556
+Mare Fecunditatis,Mare,-4.5,53.7,909
+Mare Nectaris,Mare,-15.2,35.5,333
+Mare Vaporum,Mare,13.3,3.6,245
+Mare Frigoris,Mare,56.0,1.4,1596
+Mare Humorum,Mare,-24.4,-38.6,389
+Mare Nubium,Mare,-21.3,-16.6,715
+Mare Cognitum,Mare,-10.0,-23.1,376
+Mare Marginis,Mare,13.3,86.1,420
+Mare Undarum,Mare,6.8,68.4,243
+Mare Spumans,Mare,-1.1,65.1,139
+Mare Smythii,Mare,-1.3,87.5,373
+Mare Australe,Mare,-38.9,93.0,603
+Sinus Iridum,Sinus,44.1,-31.5,236
+Sinus Roris,Sinus,54.0,-56.6,202
+Sinus Medii,Sinus,2.4,-1.7,335
+Sinus Aestuum,Sinus,12.1,-8.8,290
+Lacus Somniorum,Lacus,38.0,29.2,384
+Lacus Mortis,Lacus,45.0,27.2,152
+Lacus Temporis,Lacus,45.9,58.4,117
+Palus Putredinis,Palus,26.5,-0.4,161
+Palus Somni,Palus,14.1,45.0,143
+Palus Epidemiarum,Palus,-32.5,-27.3,286
+Clavius,Crater,-58.4,-14.1,231
+Schickard,Crater,-44.4,-54.6,227
+Grimaldi,Crater,-5.2,-68.3,222
+Janssen,Crater,-45.0,40.3,190
+Bailly,Crater,-66.5,-69.1,301
+Schiller,Crater,-51.9,-39.9,180
+Humboldt,Crater,-27.0,80.9,207
+Maginus,Crater,-50.5,-6.3,194
+Longomontanus,Crater,-49.6,-21.8,157
+Ptolemaeus,Crater,-9.3,-1.8,153
+Albategnius,Crater,-11.2,4.3,131
+Hipparchus,Crater,-5.5,4.8,138
+Alphonsus,Crater,-13.4,-2.8,119
+Arzachel,Crater,-18.2,-1.9,97
+Theophilus,Crater,-11.4,26.4,110
+Cyrillus,Crater,-13.2,24.0,98
+Catharina,Crater,-18.0,23.6,104
+Fracastorius,Crater,-21.5,33.0,124
+Maurolycus,Crater,-42.0,14.0,114
+Stöfler,Crater,-41.1,6.0,126
+Copernicus,Crater,9.7,-20.1,93
+Tycho,Crater,-43.3,-11.2,85
+Plato,Crater,51.6,-9.4,109
+Walther,Crater,-33.1,1.0,131
+Regiomontanus,Crater,-28.3,-1.0,126
+Purbach,Crater,-25.5,-2.3,118
+Petavius,Crater,-25.1,60.4,177
+Vendelinus,Crater,-16.4,61.6,147
+Langrenus,Crater,-8.9,60.9,132
+Furnerius,Crater,-36.0,60.4,135
+Gassendi,Crater,-17.6,-39.9,110
+Pitatus,Crater,-29.9,-13.5,97
+Archimedes,Crater,29.7,-4.0,83
+Aristoteles,Crater,50.2,17.4,87
+Eudoxus,Crater,44.3,16.3,67
+Posidonius,Crater,31.8,29.9,95
+Cleomedes,Crater,27.7,55.5,130
+Endymion,Crater,53.9,57.0,123
+Kepler,Crater,8.1,-38.0,32
+Aristarchus,Crater,23.7,-47.4,40
+Eratosthenes,Crater,14.5,-11.3,59
+Cassini,Crater,40.2,4.6,57
+Aristillus,Crater,33.9,1.2,55
+Autolycus,Crater,30.7,1.5,39
+Timocharis,Crater,26.7,-13.1,34
+Lambert,Crater,25.8,-21.0,30
+Euler,Crater,23.3,-29.2,27
+Marius,Crater,11.9,-50.8,41
+Herodotus,Crater,23.2,-49.7,35
+Pytheas,Crater,20.5,-20.6,20
+Geminus,Crater,34.5,56.7,86
+Proclus,Crater,16.1,46.8,28
+Julius Caesar,Crater,9.0,15.4,91
+Manilius,Crater,14.5,9.1,39
+Agrippa,Crater,4.1,10.5,44
+Triesnecker,Crater,4.2,3.6,26
+Guericke,Crater,-11.3,-14.1,59
+Bullialdus,Crater,-20.7,-22.2,61
+Stevinus,Crater,-32.5,54.2,75
+Snellius,Crater,-29.3,55.7,83
+Rheita,Crater,-37.1,47.2,70
+Piccolomini,Crater,-29.7,32.2,88
+Sabine,Crater,1.4,20.1,30
+Ritter,Crater,2.0,19.2,29
+Taruntius,Crater,5.6,46.5,56
+Maskelyne,Crater,2.2,30.1,24
+Plinius,Crater,15.4,23.7,43
+Menelaus,Crater,16.3,16.0,27
+Bessel,Crater,21.8,17.9,16
+Le Monnier,Crater,26.6,30.6,61
+Moretus,Crater,-70.6,-5.8,111
+Blancanus,Crater,-63.6,-21.4,117
+Scheiner,Crater,-60.5,-27.5,110
+Casatus,Crater,-72.8,-30.5,111
+Orontius,Crater,-40.6,-4.6,105
+Thebit,Crater,-22.0,-4.0,57
+Mersenius,Crater,-21.5,-49.2,84
+Wargentin,Crater,-49.6,-60.2,84
+Darwin,Crater,-20.2,-69.1,130
+Pythagoras,Crater,63.5,-63.0,142
+Philolaus,Crater,72.1,-32.4,71
+Anaxagoras,Crater,73.4,-10.1,51
+Gauss,Crater,35.7,79.1,177
+De la Rue,Crater,59.1,52.3,136
+Neper,Crater,8.5,84.5,137
+Reinhold,Crater,3.3,-22.8,43
+Herschel,Crater,-5.7,-2.1,41
+Flammarion,Crater,-3.4,-3.7,74
+Hevelius,Crater,2.2,-67.3,106
+Diophantus,Crater,27.6,-34.3,17
+Delisle,Crater,29.9,-34.6,25
+Birt,Crater,-22.4,-8.5,17
+Burckhardt,Crater,31.1,56.5,57
+Metius,Crater,-40.3,43.3,87
+Fabricius,Crater,-42.9,42.0,78
+Campanus,Crater,-28.0,-27.7,48
+Mercator,Crater,-29.3,-26.1,46
+Vitello,Crater,-30.4,-37.5,42
+Doppelmayer,Crater,-28.5,-41.4,64
+Flamsteed,Crater,-4.5,-44.3,20
+Letronne,Crater,-10.8,-42.5,116
+Encke,Crater,4.6,-36.6,29
+Hesiodus,Crater,-29.4,-16.3,42
+Atlas,Crater,46.7,44.4,87
+Hercules,Crater,46.7,39.1,69
+Hommel,Crater,-54.6,33.0,125
+Vlacq,Crater,-53.3,38.8,89
+Bürg,Crater,45.0,28.2,39
+Alexander,Crater,40.3,13.5,82
+Theaetetus,Crater,37.0,6.0,25
+Meton,Crater,73.6,19.2,130
+Archytas,Crater,58.7,5.0,32
+Goldschmidt,Crater,73.2,3.8,120
+Conon,Crater,21.6,2.0,22
+Encke,Crater,4.6,-36.6,29
+Byrgius,Crater,-24.7,-65.3,87
+Cruger,Crater,-16.7,-66.8,45
+Sirsalis,Crater,-12.5,-60.4,43
+Billy,Crater,-13.8,-50.1,46
+Hansteen,Crater,-11.5,-52.0,44
+Pitiscus,Crater,-50.4,30.9,82
+Zagut,Crater,-32.0,22.1,84
+Rabbi Levi,Crater,-34.7,23.6,81
+Brenner,Crater,-39.0,39.3,97
+Boscovich,Crater,9.8,11.1,46
+Gutenberg,Crater,-8.6,41.2,74
+Goclenius,Crater,-10.0,45.0,72
+Capella,Crater,-7.5,35.0,49
+Isidorus,Crater,-8.0,33.5,42
+Messier,Crater,-1.9,47.6,11
+Godin,Crater,1.8,10.2,35
+Linné,Crater,27.7,11.8,2
+Hyginus,Crater,7.8,6.3,9
+Montes Apenninus,Montes,19.9,-3.2,600
+Montes Caucasus,Montes,38.4,10.0,445
+Montes Alpes,Montes,48.3,0.5,281
+Montes Haemus,Montes,19.9,9.2,560
+Montes Carpatus,Montes,14.5,-25.3,361
+Montes Jura,Montes,47.1,-34.0,422
+Montes Pyrenaeus,Montes,-16.3,41.1,164
+Montes Taurus,Montes,28.4,41.1,172
+Montes Riphaeus,Montes,7.7,-27.8,189
+Mons Pico,Mons,45.7,-8.9,25
+Mons Piton,Mons,40.6,-0.9,25
+Montes Recti,Montes,48.0,-20.0,90
+Mons Rümker,Mons,40.8,-58.1,70
+Vallis Alpes,Vallis,49.0,3.2,166
+Vallis Schröteri,Vallis,26.2,-50.8,168
+Vallis Rheita,Vallis,-42.5,51.5,455
+Rima Hyginus,Rima,7.4,7.8,219
+Rima Ariadaeus,Rima,6.4,14.0,220
+Rupes Recta,Rupes,-22.1,-7.8,110

@@ -49,12 +49,18 @@ import math
 import numpy as np
 import pygame
 
+import cv2
+
 from astrocore.camera.catalog import scan_folder
 from astrocore.camera.frame_grabber import FrameGrabber, GrabStatus
 from astrocore.camera.virtual_cam import VirtualCamera
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
-from astrocore.config.camera_config import CameraConfig, Configuration, compute_hfov, load
+from astrocore.config.camera_config import CameraConfig, Configuration, HotspotConfig, compute_hfov, load
+from digital_eyepiece.gallery_server import GalleryServer
 from astrocore.display.skyoverlay import compute_overlay, load_catalog
+from astrocore.display.moon_mapper import (
+    MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog,
+)
 from astrocore.mount.coord import radec_to_altaz
 from astrocore.pipeline.stacker import ExposureSequence, Stacker
 from astrocore.pipeline.streaming import StreamExposure
@@ -64,7 +70,8 @@ from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
 from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
-_CATALOG_PATH = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
+_CATALOG_PATH      = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
+_MOON_CATALOG_PATH = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -166,6 +173,25 @@ def _image_rect(cam_w: int, cam_h: int, central: pygame.Rect) -> pygame.Rect:
     return pygame.Rect(ix, iy, iw, ih)
 
 
+def _apply_zoom_pan(surface: pygame.Surface, state: ViewState) -> pygame.Surface:
+    """
+    Return a new surface showing the zoomed and panned crop of `surface`.
+    When zoom_level is 1.0 the original surface is returned unchanged.
+    """
+    zoom = state.zoom_level
+    if zoom <= 1.0:
+        return surface
+    W, H = surface.get_size()
+    crop_w = max(1, int(W / zoom))
+    crop_h = max(1, int(H / zoom))
+    cx = state.zoom_center_x * W
+    cy = state.zoom_center_y * H
+    x = max(0, min(W - crop_w, int(cx - crop_w / 2)))
+    y = max(0, min(H - crop_h, int(cy - crop_h / 2)))
+    cropped = surface.subsurface(pygame.Rect(x, y, crop_w, crop_h))
+    return pygame.transform.smoothscale(cropped, (W, H))
+
+
 # ---------------------------------------------------------------------------
 # Menu builders
 # ---------------------------------------------------------------------------
@@ -186,7 +212,14 @@ def _build_action_menu(
         return "Start Streaming" if state.mode == ViewMode.ACCUMULATE else "Start Stacking"
 
     def _toggle_mode() -> None:
-        state.mode = ViewMode.ACCUMULATE if state.mode == ViewMode.LIVE else ViewMode.LIVE
+        state.mode   = ViewMode.ACCUMULATE if state.mode == ViewMode.LIVE else ViewMode.LIVE
+        state.paused = False
+
+    def _pause_label() -> str:
+        return "Resume" if state.paused else "Pause"
+
+    def _toggle_pause() -> None:
+        state.paused = not state.paused
 
     def _toggle_record() -> None:
         if recorder is None:
@@ -221,6 +254,7 @@ def _build_action_menu(
 
     m = Menu()
     m.add(MenuItem(_mode_label,   action=_toggle_mode))
+    m.add(MenuItem(_pause_label,  action=_toggle_pause))
     m.add(MenuItem("Telescope",   submenu=telescope_submenu))
     m.add(MenuItem(_record_label, action=_toggle_record))
     m.add(MenuItem("Save",        action=on_save))
@@ -229,7 +263,9 @@ def _build_action_menu(
     return m
 
 
-def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc) -> Menu:
+def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc,
+                          on_clear_images=None, on_moon_mode=None,
+                          moon_mode_label_fn=None) -> Menu:
     bin_items = [
         MenuItem("1×", action=lambda: None),   # TODO: wire to cam.bin
         MenuItem("2×", action=lambda: None),
@@ -250,6 +286,11 @@ def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc) -> Menu:
 
     m = Menu()
     m.add(MenuItem("Camera", submenu=camera_submenu))
+    if on_moon_mode is not None:
+        label_fn = moon_mode_label_fn or (lambda: "Moon Map")
+        m.add(MenuItem(label_fn, action=on_moon_mode))
+    if on_clear_images is not None:
+        m.add(MenuItem("Clear Images", action=on_clear_images))
     return m
 
 
@@ -421,12 +462,13 @@ def _render_vertical_menu(
     n      = len(items)
     ph     = n * _MENU_ROW_H + 2 * _MENU_PAD
     central = layout["central"]
+    sx, sw = layout["status_x"], layout["status_w"]
     pw     = _MENU_W
 
     if anchor == "left":
-        px = central.x
+        px = sx
     else:
-        px = central.right - pw
+        px = sx + sw - pw
     py = central.y
 
     # Dim the rest of the image area
@@ -472,8 +514,9 @@ def _vertical_menu_hit(
     n       = len(items)
     ph      = n * _MENU_ROW_H + 2 * _MENU_PAD
     central = layout["central"]
+    sx, sw  = layout["status_x"], layout["status_w"]
     pw      = _MENU_W
-    px      = central.x if anchor == "left" else central.right - pw
+    px      = sx if anchor == "left" else sx + sw - pw
     py      = central.y
     mx, my  = pos
 
@@ -501,10 +544,10 @@ _CONTROLS_ROWS = [
 
 
 def _controls_panel_rect(layout: dict) -> pygame.Rect:
-    """Controls panel rises from the bottom of the central region."""
+    """Controls panel rises from the bottom of the central region, within status bar bounds."""
     central = layout["central"]
     ph = len(_CONTROLS_ROWS) * _CTRL_ROW_H + 2 * _CTRL_PAD
-    return pygame.Rect(central.x, central.bottom - ph, central.width, ph)
+    return pygame.Rect(layout["status_x"], central.bottom - ph, layout["status_w"], ph)
 
 
 def _render_controls_menu(
@@ -600,15 +643,15 @@ def _render_context_menu(
     menu: Menu,
     pos: tuple[int, int],
     cursor_pos: tuple[int, int],
-    win_w: int,
-    win_h: int,
+    layout: dict,
 ) -> None:
     items = menu.current_items
     if not items:
         return
-    ph = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
-    px = min(pos[0], win_w - _CTX_W - 4)
-    py = min(pos[1], win_h - ph - 4)
+    ph  = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
+    sx, sw = layout["status_x"], layout["status_w"]
+    px  = max(sx, min(pos[0], sx + sw - _CTX_W - 4))
+    py  = min(pos[1], layout["bot_bar"].top - ph - 4)
 
     panel = pygame.Surface((_CTX_W, ph), pygame.SRCALPHA)
     panel.fill((0, 0, 0, 230))
@@ -636,15 +679,15 @@ def _context_hit(
     pos: tuple[int, int],
     menu: Menu,
     menu_pos: tuple[int, int],
-    win_w: int,
-    win_h: int,
+    layout: dict,
 ) -> int | None:
     items = menu.current_items
     if not items:
         return None
-    ph = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
-    px = min(menu_pos[0], win_w - _CTX_W - 4)
-    py = min(menu_pos[1], win_h - ph - 4)
+    ph  = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
+    sx, sw = layout["status_x"], layout["status_w"]
+    px  = max(sx, min(menu_pos[0], sx + sw - _CTX_W - 4))
+    py  = min(menu_pos[1], layout["bot_bar"].top - ph - 4)
     mx, my = pos
     if not (px <= mx < px + _CTX_W and py <= my < py + ph):
         return None
@@ -705,6 +748,68 @@ def _draw_cursor(surface: pygame.Surface, x: int, y: int) -> None:
     size = 10
     pygame.draw.line(surface, GREEN, (x - size, y), (x + size, y), 2)
     pygame.draw.line(surface, GREEN, (x, y - size), (x, y + size), 2)
+
+
+def _make_qr_surface(data: str, cell_px: int = 5) -> pygame.Surface | None:
+    """Render a QR code as a pygame Surface. Returns None if qrcode not installed."""
+    try:
+        import qrcode as _qr
+        qr = _qr.QRCode(
+            error_correction=_qr.constants.ERROR_CORRECT_M,
+            box_size=1, border=2,
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+    except ImportError:
+        return None
+    n = len(matrix)
+    size = n * cell_px
+    surf = pygame.Surface((size, size))
+    surf.fill((255, 255, 255))
+    for y, row in enumerate(matrix):
+        for x, cell in enumerate(row):
+            if cell:
+                pygame.draw.rect(surf, (0, 0, 0),
+                                 (x * cell_px, y * cell_px, cell_px, cell_px))
+    return surf
+
+
+def _render_qr_overlay(
+    surface: pygame.Surface,
+    qr_surf: pygame.Surface,
+    layout: dict,
+    hotspot: HotspotConfig,
+    timer: float,
+    total: float,
+) -> None:
+    """Draw the QR code + caption centred in the central region."""
+    central = layout["central"]
+    qs = qr_surf.get_width()
+    padding = 12
+
+    f = _font(11)
+    line1 = f.render(f"Join WiFi: {hotspot.ssid}  •  pw: {hotspot.password}", True, WHITE)
+    line2 = f.render("Then open your browser — gallery loads automatically", True, GREY)
+
+    panel_w = max(qs + 2 * padding, line1.get_width() + 2 * padding)
+    panel_h = qs + line1.get_height() + line2.get_height() + 4 * padding
+
+    px = central.centerx - panel_w // 2
+    py = central.centery - panel_h // 2
+
+    # Fade out in the last second
+    alpha = int(220 * min(1.0, timer))
+    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    panel.fill((0, 0, 0, alpha))
+    surface.blit(panel, (px, py))
+
+    qx = px + (panel_w - qs) // 2
+    qy = py + padding
+    surface.blit(qr_surf, (qx, qy))
+    surface.blit(line1, (px + (panel_w - line1.get_width()) // 2, qy + qs + padding))
+    surface.blit(line2, (px + (panel_w - line2.get_width()) // 2,
+                          qy + qs + padding + line1.get_height() + 4))
 
 
 def _apply_brightness(image: np.ndarray, brightness: float) -> np.ndarray:
@@ -784,7 +889,8 @@ def main() -> None:
                 break
         cam_ctx = ZwoAsiCamera(index=usb_index)
 
-    catalog = load_catalog(str(_CATALOG_PATH))
+    catalog      = load_catalog(str(_CATALOG_PATH))
+    moon_catalog = load_moon_catalog(str(_MOON_CATALOG_PATH))
 
     # -- pygame init ---------------------------------------------------------
     pygame.init()
@@ -876,8 +982,8 @@ def main() -> None:
                 cam.bin = cam_config.bin
             if cam_config.gain is not None:
                 cam.gain = cam_config.gain
-            if cam_config.offset is not None:
-                cam.offset = cam_config.offset
+            if cam_config.data_offset is not None:
+                cam.offset = cam_config.data_offset
             if cam_config.pattern is not None:
                 from dataclasses import replace as _dc_replace
                 cam._info = _dc_replace(cam.info, bayer_pattern=cam_config.pattern)
@@ -929,8 +1035,44 @@ def main() -> None:
             state.mode        = ViewMode.LIVE
             _close_menu()
 
+        # -- image save / gallery setup --------------------------------------
+        image_path: Path | None = config.image_path if config else None
+        hotspot: HotspotConfig  = config.hotspot    if config else HotspotConfig()
+
+        if image_path is not None:
+            image_path.mkdir(parents=True, exist_ok=True)
+            GalleryServer(image_path, port=hotspot.port).start()
+
+        # QR surface built once from hotspot credentials (static)
+        _qr_surf: pygame.Surface | None = _make_qr_surface(hotspot.wifi_qr_data)
+        _qr_timer: list[float] = [0.0]   # seconds remaining for QR overlay
+        _QR_DURATION = 10.0
+
         def _on_save() -> None:
-            # TODO: save stacked image to disk
+            if image_path is None:
+                logging.warning("image_path not set in configuration.yaml — cannot save")
+                _close_menu()
+                return
+            ts   = time.strftime("%Y-%m-%d_%H-%M-%S")
+            path = image_path / f"{ts}.jpg"
+            # Capture the current screen (includes status bars)
+            pixels = pygame.surfarray.array3d(screen)   # (W, H, 3) RGB
+            pixels = pixels.swapaxes(0, 1)              # → (H, W, 3)
+            bgr    = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            logging.info("Saved %s", path)
+            _qr_timer[0] = _QR_DURATION
+            _close_menu()
+
+        def _on_clear_images() -> None:
+            if image_path is None:
+                _close_menu()
+                return
+            deleted = 0
+            for f in image_path.glob("*.jpg"):
+                f.unlink()
+                deleted += 1
+            logging.info("Cleared %d image(s) from %s", deleted, image_path)
             _close_menu()
 
         def _on_set_dpc() -> None:
@@ -953,12 +1095,24 @@ def main() -> None:
             on_quit          = _on_quit,
         )
 
-        utilities_menu = _build_utilities_menu(cam, cam_config_ref, _on_set_dpc)
+        def _on_moon_mode() -> None:
+            state.moon_mode = not state.moon_mode
+            _close_menu()
+
+        utilities_menu = _build_utilities_menu(
+            cam, cam_config_ref, _on_set_dpc,
+            on_clear_images  = _on_clear_images,
+            on_moon_mode     = _on_moon_mode,
+            moon_mode_label_fn = lambda: "Moon Map [ON]" if state.moon_mode else "Moon Map",
+        )
 
         context_menu_ref: list[Menu | None] = [None]
 
         dispatcher = InputDispatcher(
-            state, action_menu, zoom_step=1.2, zoom_min=1.0, zoom_max=8.0,
+            state, action_menu,
+            zoom_step = 1.2,
+            zoom_min  = 1.0,
+            zoom_max  = config.max_zoom if config else 5.0,
         )
 
         actual_gain = cam.gain
@@ -970,6 +1124,7 @@ def main() -> None:
         cam_w_ref: list[int] = [cam.info.sensor_width_px  or win_w]
         cam_h_ref: list[int] = [cam.info.sensor_height_px or win_h]
         img_rect   = _image_rect(cam_w_ref[0], cam_h_ref[0], layout["central"])
+        dispatcher.set_img_rect(img_rect)
 
         _frame_queue: queue.Queue = queue.Queue(maxsize=2)
         _exposure_ref = [int(ae.current * 1_000_000)]
@@ -1103,7 +1258,7 @@ def main() -> None:
                 elif event.type == pygame.MOUSEMOTION:
                     cursor_pos  = event.pos
                     t_last_move = time.monotonic()
-                    dispatcher.on_mouse_move(*event.pos)
+                    dispatcher.on_mouse_move(*event.pos, right_held=bool(event.buttons[2]))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos
@@ -1152,7 +1307,7 @@ def main() -> None:
                             ctx = context_menu_ref[0]
                             if ctx is not None:
                                 idx = _context_hit(event.pos, ctx, state.context_menu_pos,
-                                                   win_w, win_h)
+                                                   layout)
                                 if idx is not None:
                                     ctx.set_selection(idx)
                                     ctx.select()
@@ -1176,11 +1331,20 @@ def main() -> None:
                                     state.mode = ViewMode.LIVE
 
                     elif event.button == 3:
-                        # --- Right-click: context menu ---
+                        # --- Right button down: start drag/click tracking ---
+                        dispatcher.on_right_button_down(mx, my)
                         if state.active_menu:
                             _close_menu()
-                        else:
-                            # Determine if cursor is near a catalog object
+
+                    elif event.button == 2:
+                        if dispatcher.on_middle_click():
+                            alert_timer = ALERT_DURATION
+
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 3 and dispatcher.on_right_button_up():
+                        # was a click (not a drag) — open context menu
+                        if not state.active_menu:
+                            mx, my = event.pos
                             near = None
                             for entry in ov_table:
                                 d2 = (entry["px"] - mx) ** 2 + (entry["py"] - my) ** 2
@@ -1193,23 +1357,19 @@ def main() -> None:
                                     alert_timer = ALERT_DURATION
 
                             context_menu_ref[0] = _build_context_menu(
-                                near_object  = near is not None,
-                                object_name  = near["name"] if near else "",
-                                on_focus     = _start_focus_mode,
-                                on_slew      = _slew_to_cursor,
+                                near_object     = near is not None,
+                                object_name     = near["name"] if near else "",
+                                on_focus        = _start_focus_mode,
+                                on_slew         = _slew_to_cursor,
                                 mount_connected = state.mount_connected,
                             )
                             state.context_menu_pos = event.pos
                             _open_menu("context")
 
-                    elif event.button == 2:
-                        if dispatcher.on_middle_click():
-                            alert_timer = ALERT_DURATION
-
                 elif event.type == pygame.MOUSEWHEEL:
                     if state.focus_state == FocusState.OFF:
                         if state.active_menu in (None, "controls"):
-                            dispatcher.on_scroll(event.y)   # zoom
+                            dispatcher.on_scroll(event.y, cursor_pos)   # zoom
                         else:
                             # Scroll navigates action / utilities menus
                             if state.active_menu == "action":
@@ -1219,6 +1379,7 @@ def main() -> None:
 
             # -- mode change --------------------------------------------------
             if state.mode != prev_mode:
+                state.paused = False
                 if state.mode == ViewMode.LIVE:
                     ae.reset()
                     if state.recording and recorder is not None:
@@ -1247,7 +1408,7 @@ def main() -> None:
             except queue.Empty:
                 result = None
 
-            if result is not None and result.status == GrabStatus.SUCCESS:
+            if result is not None and result.status == GrabStatus.SUCCESS and not state.paused:
                 now = time.monotonic()
                 fps_display  = 1.0 / max(now - t_last_frame, 1e-6)
                 t_last_frame = now
@@ -1260,6 +1421,7 @@ def main() -> None:
                     cam_w_ref[0] = fw
                     cam_h_ref[0] = fh
                     img_rect = _image_rect(fw, fh, layout["central"])
+                    dispatcher.set_img_rect(img_rect)
 
                 if state.focus_state == FocusState.OFF:
                     _cal_ok = result.calibrated
@@ -1303,7 +1465,7 @@ def main() -> None:
             pygame.draw.rect(screen, BLACK, layout["central"])
 
             if last_surface is not None:
-                screen.blit(last_surface, img_rect.topleft)
+                screen.blit(_apply_zoom_pan(last_surface, state), img_rect.topleft)
                 if state.all_sky_mode:
                     dark = pygame.Surface((img_rect.width, img_rect.height), pygame.SRCALPHA)
                     dark.fill((0, 0, 0, 180))
@@ -1315,23 +1477,47 @@ def main() -> None:
                 cy = layout["central"].centery - label.get_height() // 2
                 screen.blit(label, (cx, cy))
 
-            # Sky overlay
-            if state.overlay_active and mount_holder[0] is not None:
+            # Sky / Moon overlay
+            if state.overlay_active:
+                ov_table: list[dict] = []
                 try:
-                    ra_h, dec_deg = mount_holder[0].position
-                    alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
-                    ov_arr, ov_table = compute_overlay(
-                        catalog,
-                        fov_deg     = fov_ref[0],
-                        alt_deg     = alt_deg,
-                        az_deg      = az_deg,
-                        image_shape = (img_rect.height, img_rect.width),
-                        lat_deg     = lat,
-                        lon_deg     = lon,
-                    )
-                    ov_surf = pygame.image.frombuffer(
-                        ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
-                    screen.blit(ov_surf, img_rect.topleft)
+                    if state.moon_mode:
+                        # Moon feature overlay — disk assumed centred in the source image
+                        cw, ch = img_rect.width, img_rect.height
+                        moon_r_src = (MOON_ANGULAR_RADIUS_DEG / fov_ref[0]) * cw
+                        moon_r_px  = moon_r_src * state.zoom_level
+                        moon_cx = (0.5 - state.zoom_center_x) * state.zoom_level * cw + cw / 2
+                        moon_cy = (0.5 - state.zoom_center_y) * state.zoom_level * ch + ch / 2
+                        ov_arr, ov_table = compute_moon_overlay(
+                            moon_catalog,
+                            moon_cx      = moon_cx,
+                            moon_cy      = moon_cy,
+                            moon_r       = moon_r_px,
+                            image_shape  = (ch, cw),
+                            min_diameter_km = max(0.0, 20.0 * (50.0 / max(moon_r_px, 1))),
+                        )
+                    elif mount_holder[0] is not None:
+                        ra_h, dec_deg = mount_holder[0].position
+                        alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
+                        eff_fov = fov_ref[0] / state.zoom_level
+                        aspect  = img_rect.height / img_rect.width
+                        d_az    = (state.zoom_center_x - 0.5) * fov_ref[0]
+                        d_alt   = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect
+                        ov_arr, ov_table = compute_overlay(
+                            catalog,
+                            fov_deg     = eff_fov,
+                            alt_deg     = alt_deg + d_alt,
+                            az_deg      = az_deg + d_az,
+                            image_shape = (img_rect.height, img_rect.width),
+                            lat_deg     = lat,
+                            lon_deg     = lon,
+                        )
+                    else:
+                        ov_arr = None
+                    if ov_arr is not None:
+                        ov_surf = pygame.image.frombuffer(
+                            ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
+                        screen.blit(ov_surf, img_rect.topleft)
                 except Exception as exc:
                     logging.warning("Overlay error: %s", exc)
                 _render_hover_label(screen, ov_table, *cursor_pos)
@@ -1351,7 +1537,14 @@ def main() -> None:
             elif state.active_menu == "context" and context_menu_ref[0] is not None:
                 _render_context_menu(screen, context_menu_ref[0],
                                      state.context_menu_pos, cursor_pos,
-                                     win_w, win_h)
+                                     layout)
+
+            # QR overlay (shown after Save)
+            if _qr_timer[0] > 0:
+                _qr_timer[0] -= dt
+                if _qr_surf is not None:
+                    _render_qr_overlay(screen, _qr_surf, layout, hotspot,
+                                       _qr_timer[0], _QR_DURATION)
 
             # Alert overlay
             if alert_timer > 0:

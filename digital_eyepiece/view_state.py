@@ -60,8 +60,10 @@ class ViewState:
     menu_open: bool = False             # kept for dispatcher / test compatibility
     overlay_active: bool = False
     overlay_zoom: float = 1.0
+    moon_mode: bool = False         # True = moon feature overlay instead of sky catalog
     mount_connected: bool = False
     all_sky_mode: bool = False
+    paused: bool = False
     recording: bool = False
     focus_state: FocusState = FocusState.OFF
     focus_center_x: float = 0.5   # normalized [0, 1] in window coords at time of click

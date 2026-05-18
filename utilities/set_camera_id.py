@@ -112,7 +112,7 @@ def _default_block(camera_id: int, cam: ZwoAsiCamera, raw: dict) -> dict:
     if model_defaults.get("gain") is not None:
         config["gain"] = int(model_defaults["gain"])
     if model_defaults.get("offset") is not None:
-        config["offset"] = int(model_defaults["offset"])
+        config["data_offset"] = int(model_defaults["offset"])
     return {"id": camera_id, "config_1": config}
 
 

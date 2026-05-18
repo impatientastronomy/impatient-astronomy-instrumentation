@@ -186,8 +186,8 @@ def _acquire_camera(
         with ZwoAsiCamera(index=usb_index) as cam:
             if cam_config.gain is not None:
                 cam.gain = cam_config.gain
-            if cam_config.offset is not None:
-                cam.offset = cam_config.offset
+            if cam_config.data_offset is not None:
+                cam.offset = cam_config.data_offset
             cam.flip = FlipMode(cam_config.flip)
             cam.set_roi(x=0, y=0, width=None, height=None, bin=cam_config.bin)
 

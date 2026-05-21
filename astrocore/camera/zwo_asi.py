@@ -643,6 +643,7 @@ class ZwoAsiCamera(Camera):
             roi_width=roi_w,
             roi_height=roi_h,
             flip=FlipMode(flip_val).name,
+            pixel_size_um=info.pixel_size_um,
             telescope_description=self.meta.telescope_description,
             focal_length_mm=self.meta.focal_length_mm,
             RA=self.meta.RA,

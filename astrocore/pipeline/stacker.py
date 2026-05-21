@@ -29,6 +29,7 @@ from .stretch import (
 _BLEND_ALPHA    = 0.06    # blending weight for each display tick
 _MAX_SHIFT_PX   = 50.0    # reject frames with alignment shift larger than this
 _ALIGN_RF       = 8       # block-sum downsample factor for alignment preprocessing
+_REGISTER_MIN_S = 5.0     # frames below this exposure are stacked without alignment
 
 
 class ExposureSequence:
@@ -164,6 +165,16 @@ class Stacker:
             self._frame_count = 1
             self._t_accum = exposure_s
             self._sky_dirty = True
+            return True
+
+        # Short exposures: accumulate without alignment — low SNR makes phase
+        # correlation unreliable, and hot pixels can cause spurious rejections.
+        if exposure_s < _REGISTER_MIN_S:
+            self._stack_sum = self._stack_sum + img
+            self._frame_count += 1
+            self._t_accum += exposure_s
+            self._sky_dirty = True
+            self._ref_frame = img.copy()
             return True
 
         # Incremental shift: compare to the previous accepted raw frame so only

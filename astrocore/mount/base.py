@@ -49,3 +49,12 @@ class Mount(ABC):
     def is_slewing(self) -> bool:
         """True while the mount is executing a slew."""
         ...
+
+    @property
+    def is_tracking(self) -> bool:
+        """True if the mount is actively tracking the sky.
+
+        Default returns True so drivers that don't implement this are treated
+        as always tracking.  Override in concrete classes that can query state.
+        """
+        return True

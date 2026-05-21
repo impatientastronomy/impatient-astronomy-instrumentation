@@ -89,6 +89,7 @@ class VirtualCamera(Camera):
         self._t_exp: float = float("inf")    # monotonic time when exposure completes
         self._image_shape: tuple = (0, 0)
         self._camera_id: int = camera_id or 0
+        self._pixel_size_um: float = 0.0
 
     # -- connection lifecycle -----------------------------------------------
 
@@ -113,10 +114,19 @@ class VirtualCamera(Camera):
         self._file_table = table
         self._camera_id = int(table.camera_id.iloc[0])
 
-        # Read first image once to learn sensor dimensions
+        # Read first image once to learn sensor dimensions and extract metadata
+        import json as _json
         import tifffile
-        first = tifffile.imread(str(table.path.iloc[0]))
+        first_path = str(table.path.iloc[0])
+        with tifffile.TiffFile(first_path) as tif:
+            first = tif.asarray()
+            desc = tif.pages[0].description or ""
         self._image_shape = first.shape
+        try:
+            saved = _json.loads(desc)
+            self._pixel_size_um = float(saved.get("pixel_size_um", 0.0))
+        except (ValueError, TypeError):
+            self._pixel_size_um = 0.0
 
         self._cursors = {}
         self._t_exp = float("inf")
@@ -140,7 +150,7 @@ class VirtualCamera(Camera):
             usb_index=0,
             sensor_width_px=w,
             sensor_height_px=h,
-            pixel_size_um=0.0,
+            pixel_size_um=self._pixel_size_um,
             bit_depth=16,
             camera_id=self._camera_id,
             bayer_pattern=self._bayer_pattern,
@@ -177,17 +187,26 @@ class VirtualCamera(Camera):
 
         row = matching.iloc[cursor].to_dict()
 
+        import json as _json
         import tifffile
-        data = tifffile.imread(str(row["path"]))
+        with tifffile.TiffFile(str(row["path"])) as tif:
+            data = tif.asarray()
+            desc = tif.pages[0].description or ""
+        try:
+            saved = _json.loads(desc)
+        except (ValueError, TypeError):
+            saved = {}
+
         self._t_exp = float("inf")   # buffer consumed → IDLE
-        return Frame(data=data, meta=self._build_meta(row))
+        return Frame(data=data, meta=self._build_meta(row, saved))
 
     def abort(self) -> None:
         self._t_exp = float("inf")
 
     # -- internals ----------------------------------------------------------
 
-    def _build_meta(self, row: dict) -> FrameMeta:
+    def _build_meta(self, row: dict, saved: dict | None = None) -> FrameMeta:
+        saved = saved or {}
         temp = row.get("temperature_c")
         if temp is None or (isinstance(temp, float) and math.isnan(temp)):
             temp = None
@@ -203,10 +222,15 @@ class VirtualCamera(Camera):
             temperature_c=temp,
             bayer_pattern=self._bayer_pattern,
             filter_id=int(row["filter_id"]),
+            pixel_size_um=self._pixel_size_um,
             telescope_description=self.meta.telescope_description,
             focal_length_mm=self.meta.focal_length_mm,
             RA=self.meta.RA,
             Dec=self.meta.Dec,
             Lat=self.meta.Lat,
             Lon=self.meta.Lon,
+            roi_x=saved.get("roi_x"),
+            roi_y=saved.get("roi_y"),
+            roi_width=saved.get("roi_width"),
+            roi_height=saved.get("roi_height"),
         )

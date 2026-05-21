@@ -110,6 +110,7 @@ class FrameMeta:
     roi_width: int | None = None
     roi_height: int | None = None
     flip: str | None = None
+    pixel_size_um:         float = 0.0
     telescope_description: str   = ""
     focal_length_mm:       float = 0.0
     RA:        float = 0.0

@@ -59,9 +59,10 @@ class ViewState:
     active_menu: str | None = None      # 'action' | 'controls' | 'utilities' | 'context' | None
     menu_open: bool = False             # kept for dispatcher / test compatibility
     overlay_active: bool = False
-    overlay_zoom: float = 1.0
+    sky_map_fov: float = 20.0       # active FOV (degrees) while in all_sky_mode
     moon_mode: bool = False         # True = moon feature overlay instead of sky catalog
     mount_connected: bool = False
+    mount_tracking:  bool = False   # True only after connect confirms tracking or sync
     all_sky_mode: bool = False
     paused: bool = False
     recording: bool = False
@@ -69,3 +70,5 @@ class ViewState:
     focus_center_x: float = 0.5   # normalized [0, 1] in window coords at time of click
     focus_center_y: float = 0.5
     context_menu_pos: tuple[int, int] = (0, 0)  # screen position of context menu
+    sky_map_cam_fov_h: float | None = None   # camera horizontal FOV (deg) at SkyMap entry
+    sky_map_cam_fov_v: float | None = None   # camera vertical FOV (deg) at SkyMap entry

@@ -129,6 +129,7 @@ class FrameGrabber:
         flat: bool = True,
         dpc: bool = False,
         demosaic: bool = True,
+        median: bool = False,
     ) -> GrabResult:
         """
         Call every loop tick. Returns immediately with current state.
@@ -149,6 +150,9 @@ class FrameGrabber:
             Requires dark to have been loaded first (DPC file shares dark's name).
         demosaic :
             Debayer the image using self.pattern. No-op if pattern is None.
+        median :
+            Apply a 3×3 median filter to each color plane after demosaicing.
+            Suppresses isolated hot pixels when no dark/DPC calibration is available.
         """
         # -- Handle exposure change --
         if exposure_us is not None:
@@ -200,6 +204,9 @@ class FrameGrabber:
                 imP = _debayer(imR, self.pattern)
             else:
                 imP = imR
+
+            if median:
+                imP = _median_filter_planes(imP)
 
             return GrabResult(
                 status=GrabStatus.SUCCESS,
@@ -404,6 +411,17 @@ def _debayer(data: np.ndarray, pattern: str) -> np.ndarray:
             f"Unknown Bayer pattern: {pattern!r}. Expected one of: {list(pattern_map)}"
         )
     return cv2.cvtColor(data, code)
+
+
+def _median_filter_planes(img: np.ndarray) -> np.ndarray:
+    """3×3 median filter applied independently to each color plane (or mono image)."""
+    import cv2
+    if img.ndim == 3:
+        return np.stack(
+            [cv2.medianBlur(img[:, :, c], 3) for c in range(img.shape[2])],
+            axis=2,
+        )
+    return cv2.medianBlur(img, 3)
 
 
 def _read_calibration(path: Path, meta, dtype: type) -> np.ndarray:

@@ -1,0 +1,79 @@
+# Overlay style definitions for the sky overlay.
+# Referenced by name in configuration.yaml: overlay_style: style1
+#
+# One or more named styles may be defined in this file.
+# Each camera entry in configuration.yaml selects a style by name.
+#
+# Per-type fields
+# ---------------
+#   color      : [R, G, B]  0-255 each
+#   alpha      : 0-255  (255 = fully opaque)
+#   mag_limit  : faintest magnitude to render for this type
+#   max_count  : maximum number of markers shown (brightest N kept)
+#   size_min   : minimum marker radius in pixels
+#   size_max   : maximum marker radius in pixels
+#   shape      : dot           — filled circle (good for stars)
+#              | circle        — open ring
+#              | circle_cross  — open ring with crosshair (default for DSOs)
+#              | cross         — crosshair only
+#
+# Horizon, FOV box, and constellation lines
+# -----------------------------------------
+#   horizon / fov_box / constellations:
+#     show   : true | false
+#     color  : [R, G, B]
+#     alpha  : 0-255
+
+style1:
+  label_mag_limit: 4.0   # faintest magnitude to label with a name
+
+  star:
+    color:     [255, 245, 220]
+    alpha:     210
+    mag_limit: 6.5
+    max_count: 30
+    size_min:  1
+    size_max:  5
+    shape:     dot
+
+  galaxy:
+    color:     [80, 200, 255]
+    alpha:     210
+    mag_limit: 10.0
+    max_count: 50
+    size_min:  4
+    size_max:  40
+    shape:     circle_cross
+
+  nebula:
+    color:     [255, 80, 80]
+    alpha:     210
+    mag_limit: 10.0
+    max_count: 30
+    size_min:  4
+    size_max:  40
+    shape:     circle_cross
+
+  cluster:
+    color:     [80, 220, 80]
+    alpha:     210
+    mag_limit: 8.0
+    max_count: 30
+    size_min:  4
+    size_max:  40
+    shape:     circle_cross
+
+  horizon:
+    show:  true
+    color: [255, 160, 0]
+    alpha: 180
+
+  fov_box:
+    show:  true
+    color: [255, 255, 255]
+    alpha: 200
+
+  constellations:
+    show:  true
+    color: [80, 100, 220]
+    alpha: 160

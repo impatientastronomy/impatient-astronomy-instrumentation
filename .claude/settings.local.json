@@ -11,7 +11,9 @@
       "Bash(uv *)",
       "Bash(unset ASI_LIB)",
       "Bash(python *)",
-      "Bash(xargs ls)"
+      "Bash(xargs ls)",
+      "Bash(awk 'NR>=100 && NR<=130')",
+      "Bash(awk 'NR>=1670 && NR<=1800' /Users/jasonhome/Documents/repos/impatient-astronomy-instrumentation/digital_eyepiece/main.py)"
     ]
   }
 }

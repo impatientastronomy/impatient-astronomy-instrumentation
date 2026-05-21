@@ -22,10 +22,9 @@ Icons open menus:  ★ → Action   ⚙ → Utilities   ☰ → Controls
 Mouse
 -----
 Left-click  : over open menu item → select; off menu → cancel; no menu → Stack/Stream
-Right-click : context menu
-Right-hold  : drag image  (not yet implemented)
+Right-click : context menu (Slew here / Sync here / SkyMap / Focus / Exit SkyMap)
+Right-hold  : pan image
 Scroll      : zoom
-Middle-click: slew mount to cursor (mount connected + overlay visible)
 Hover       : show object name when star overlay is active
 
 Press Q or Escape to quit.
@@ -57,11 +56,12 @@ from astrocore.camera.virtual_cam import VirtualCamera
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import CameraConfig, Configuration, HotspotConfig, compute_hfov, load
 from digital_eyepiece.gallery_server import GalleryServer
-from astrocore.display.skyoverlay import compute_overlay, load_catalog
+from astrocore.display.overlay_style import load_overlay_style
+from astrocore.display.skyoverlay import compute_overlay, load_catalog, load_constellation_lines
 from astrocore.display.moon_mapper import (
     MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog,
 )
-from astrocore.mount.coord import radec_to_altaz
+from astrocore.mount.coord import altaz_to_radec, radec_to_altaz
 from astrocore.pipeline.stacker import ExposureSequence, Stacker
 from astrocore.pipeline.streaming import StreamExposure
 from digital_eyepiece.display import stretch_to_uint8, to_surface
@@ -70,8 +70,10 @@ from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
 from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
-_CATALOG_PATH      = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
-_MOON_CATALOG_PATH = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
+_CATALOG_PATH            = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
+_MOON_CATALOG_PATH       = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
+_OVERLAY_STYLE_PATH      = Path(__file__).resolve().parent.parent / "overlay_style.yaml"
+_CONSTELLATION_PATH      = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "constellation_lines.csv"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -92,7 +94,7 @@ TARGET_FPS        = 60
 CURSOR_HIDE_DELAY = 5.0
 ALERT_DURATION    = 3.0
 
-FOCUS_ROI_HALF = 100
+FOCUS_ROI_HALF = 200
 
 # Color palette — black background, dim grey UI elements
 BLACK  = (0, 0, 0)
@@ -192,6 +194,23 @@ def _apply_zoom_pan(surface: pygame.Surface, state: ViewState) -> pygame.Surface
     return pygame.transform.smoothscale(cropped, (W, H))
 
 
+def _screen_to_sensor_norm(
+    mx: int, my: int,
+    img_rect: pygame.Rect,
+    state: ViewState,
+) -> tuple[float, float]:
+    """Map a screen pixel to sensor-normalised coords [0, 1], accounting for zoom/pan."""
+    nx = (mx - img_rect.left) / img_rect.width
+    ny = (my - img_rect.top)  / img_rect.height
+    zoom = state.zoom_level
+    half = 0.5 / zoom
+    cx = max(half, min(1.0 - half, state.zoom_center_x))
+    cy = max(half, min(1.0 - half, state.zoom_center_y))
+    sx = cx + (nx - 0.5) / zoom
+    sy = cy + (ny - 0.5) / zoom
+    return max(0.0, min(1.0, sx)), max(0.0, min(1.0, sy))
+
+
 # ---------------------------------------------------------------------------
 # Menu builders
 # ---------------------------------------------------------------------------
@@ -200,10 +219,6 @@ def _build_action_menu(
     state: ViewState,
     on_connect,
     on_disconnect,
-    on_start_focus,
-    telescope_configs: list[tuple[str, str]],
-    on_select_config,
-    active_desc_fn,
     recorder,
     on_save,
     on_quit,
@@ -234,21 +249,18 @@ def _build_action_menu(
     def _record_label() -> str:
         return "Stop Recording" if state.recording else "Record"
 
-    if len(telescope_configs) > 1:
-        scope_items = [
-            MenuItem(desc, action=lambda cn=cn: on_select_config(cn))
-            for cn, desc in telescope_configs
-        ]
-        scope_items.append(MenuItem("Back"))
-        scope_entry = MenuItem(active_desc_fn, submenu=scope_items)
-    else:
-        scope_entry = MenuItem(active_desc_fn)
+    def _connect_label() -> str:
+        return "Disconnect" if state.mount_connected else "Connect"
+
+    def _toggle_connect() -> None:
+        if state.mount_connected:
+            on_disconnect()
+        else:
+            on_connect()
 
     telescope_submenu = [
-        scope_entry,
-        MenuItem("Connect",    action=on_connect),
-        MenuItem("Disconnect", action=on_disconnect),
-        MenuItem("Park",       action=lambda: None),
+        MenuItem(_connect_label, action=_toggle_connect),
+        MenuItem("Park",         action=lambda: None),
         MenuItem("Back"),
     ]
 
@@ -258,7 +270,6 @@ def _build_action_menu(
     m.add(MenuItem("Telescope",   submenu=telescope_submenu))
     m.add(MenuItem(_record_label, action=_toggle_record))
     m.add(MenuItem("Save",        action=on_save))
-    m.add(MenuItem("Focus",       action=on_start_focus))
     m.add(MenuItem("Quit",        action=on_quit))
     return m
 
@@ -299,15 +310,25 @@ def _build_context_menu(
     object_name: str,
     on_focus,
     on_slew,
+    on_sync,
+    on_sky_map,
     mount_connected: bool,
+    in_sky_map: bool = False,
+    on_exit_sky_map=None,
 ) -> Menu:
     m = Menu()
     if near_object:
         m.add(MenuItem(f"About {object_name}", action=lambda: None))
-    m.add(MenuItem("Focus", action=on_focus))
-    m.add(MenuItem("Slew here", action=on_slew if mount_connected else None))
+    if not in_sky_map:
+        m.add(MenuItem("Focus here", action=on_focus))
     if mount_connected:
-        m.add(MenuItem("SkyMap", action=lambda: None))
+        m.add(MenuItem("Slew here", action=on_slew))
+    if near_object:
+        m.add(MenuItem("Sync here", action=on_sync if mount_connected else None))
+    if in_sky_map:
+        m.add(MenuItem("Exit SkyMap", action=on_exit_sky_map))
+    elif mount_connected:
+        m.add(MenuItem("SkyMap", action=on_sky_map))
     return m
 
 
@@ -697,26 +718,85 @@ def _context_hit(
 
 # --- Misc overlays ----------------------------------------------------------
 
+_DSO_HIT_MARGIN = 15   # px beyond the drawn radius that counts as a hit
+
+def _render_constellation_labels(
+    surface: pygame.Surface,
+    table: list[dict],
+    img_rect: pygame.Rect | None,
+) -> None:
+    """Render permanent constellation name labels from entries with type 'constellation_label'."""
+    ox = img_rect.left if img_rect else 0
+    oy = img_rect.top  if img_rect else 0
+    f  = _font(10)
+    con_color = (140, 150, 230)   # soft blue-grey to match constellation line color
+    for entry in table:
+        if entry.get("type") != "constellation_label":
+            continue
+        name = entry.get("name", "")
+        if not name:
+            continue
+        sx = entry["px"] + ox
+        sy = entry["py"] + oy
+        label = f.render(name, True, con_color)
+        lw, lh = label.get_size()
+        # Centre the text on the centroid
+        tx = sx - lw // 2
+        ty = sy - lh // 2
+        bg = pygame.Surface((lw + 4, lh + 2), pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 120))
+        surface.blit(bg,    (tx - 2, ty - 1))
+        surface.blit(label, (tx, ty))
+
+
 def _render_hover_label(
     surface: pygame.Surface,
     table: list[dict],
     cursor_x: int,
     cursor_y: int,
+    img_rect: pygame.Rect | None = None,
     threshold: int = 25,
 ) -> None:
     if not table:
         return
-    best, best_d2 = None, threshold * threshold
+
+    # Hit detection uses overlay-local coords (origin = img_rect top-left).
+    # Label rendering uses screen coords (cursor_x / cursor_y unchanged).
+    ox = img_rect.left if img_rect else 0
+    oy = img_rect.top  if img_rect else 0
+    lx = cursor_x - ox   # cursor in overlay-local space
+    ly = cursor_y - oy
+
+    # Non-stars (DSOs) take priority over stars when their regions overlap.
+    best_dso  = None
+    best_dso_d2 = float("inf")
+    best_star  = None
+    best_star_d2 = float("inf")
+
     for entry in table:
-        d2 = (entry["px"] - cursor_x) ** 2 + (entry["py"] - cursor_y) ** 2
-        if d2 < best_d2:
-            best_d2 = d2
-            best = entry
+        if entry.get("type") == "constellation_label":
+            continue
+        d2 = (entry["px"] - lx) ** 2 + (entry["py"] - ly) ** 2
+        is_star = entry.get("type") == "star"
+        if is_star:
+            if d2 < threshold * threshold and d2 < best_star_d2:
+                best_star_d2 = d2
+                best_star = entry
+        else:
+            hit_r = entry.get("radius", 0) + _DSO_HIT_MARGIN
+            hit_r = max(hit_r, threshold)
+            if d2 < hit_r * hit_r and d2 < best_dso_d2:
+                best_dso_d2 = d2
+                best_dso = entry
+
+    best = best_dso if best_dso is not None else best_star
     if best is None:
         return
 
-    name = best["name"] or best["type"]
-    text = f"{name}  mag {best['mag']:.1f}  {best['type']}"
+    name = best.get("name") or best.get("type") or ""
+    mag  = best.get("mag")
+    typ  = best.get("type") or ""
+    text = f"{name}  mag {mag:.1f}  {typ}" if mag is not None else f"{name}  {typ}"
     f = _font(10)
     label = f.render(text, True, WHITE)
     x = min(cursor_x + 16, surface.get_width()  - label.get_width()  - 10)
@@ -831,6 +911,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Replay a recorded session instead of live hardware.")
     p.add_argument("--vcam-accel", type=float, default=1.0, metavar="FACTOR",
                    help="Time-acceleration for vcam playback (default: 1.0)")
+    p.add_argument("--vmount", action="store_true",
+                   help="Use a virtual mount for testing (no hardware required). "
+                        "Connect via Action > Telescope > Connect.")
     p.add_argument("--fullscreen", action="store_true",
                    help="Run fullscreen at the native display resolution (default on Pi).")
     p.add_argument("--window-size", metavar="WxH", default=None,
@@ -891,6 +974,12 @@ def main() -> None:
 
     catalog      = load_catalog(str(_CATALOG_PATH))
     moon_catalog = load_moon_catalog(str(_MOON_CATALOG_PATH))
+    try:
+        constellation_lines = load_constellation_lines(
+            str(_CONSTELLATION_PATH), str(_CATALOG_PATH))
+    except Exception as exc:
+        logging.warning("Failed to load constellation lines: %s", exc)
+        constellation_lines = []
 
     # -- pygame init ---------------------------------------------------------
     pygame.init()
@@ -936,6 +1025,10 @@ def main() -> None:
     cam_config_ref: list[CameraConfig] = [CameraConfig()]
     fov_ref:        list[float]        = [30.0]
     mount_holder:   list               = [None]
+    overlay_style = load_overlay_style(
+        _OVERLAY_STYLE_PATH,
+        cam_config_ref[0].overlay_style,
+    )
 
     def _open_menu(name: str) -> None:
         state.active_menu = name
@@ -950,6 +1043,12 @@ def main() -> None:
             context_menu_ref[0].reset()
 
     def _connect_mount() -> None:
+        if args.vmount:
+            from astrocore.mount.virtual_mount import VirtualMount
+            mount_holder[0] = VirtualMount(lat_deg=lat, lon_deg=lon)
+            state.mount_connected = True
+            state.mount_tracking  = True   # VirtualMount always tracks
+            return
         driver = cam_config_ref[0].mount_driver
         if not driver:
             return
@@ -960,6 +1059,12 @@ def main() -> None:
                 return
             mount_holder[0] = cls()
             state.mount_connected = True
+            try:
+                state.mount_tracking = mount_holder[0].is_tracking
+            except Exception:
+                state.mount_tracking = False
+            if not state.mount_tracking:
+                logging.info("Mount connected but not tracking — overlay will use north horizon")
         except Exception as exc:
             logging.warning("Mount connect failed: %s", exc)
 
@@ -968,6 +1073,7 @@ def main() -> None:
             mount_holder[0].disconnect()
             mount_holder[0] = None
         state.mount_connected = False
+        state.mount_tracking  = False
 
     with cam_ctx as cam:
         _cam_configured = config is not None and cam.info.camera_id in config.camera_ids()
@@ -978,6 +1084,7 @@ def main() -> None:
         if config is not None:
             cam_config = config.get_config(cam.info.camera_id)
             cam_config_ref[0] = cam_config
+            overlay_style = load_overlay_style(_OVERLAY_STYLE_PATH, cam_config.overlay_style)
             if cam_config.bin > 1:
                 cam.bin = cam_config.bin
             if cam_config.gain is not None:
@@ -991,8 +1098,11 @@ def main() -> None:
             cam.meta.focal_length_mm       = cam_config.focal_length_mm
             cam.meta.Lat = lat
             cam.meta.Lon = lon
-            roi_w = cam_config.effective_roi(
-                cam.info.sensor_width_px, cam.info.sensor_height_px)[2]
+            roi_x, roi_y, roi_w, roi_h = cam_config.effective_roi(
+                cam.info.sensor_width_px, cam.info.sensor_height_px)
+            if (isinstance(cam, ZwoAsiCamera)
+                    and (cam_config.cam_size[0] > 0 or cam_config.cam_size[1] > 0)):
+                cam.set_roi(x=roi_x, y=roi_y, width=roi_w, height=roi_h)
             fov_ref[0] = compute_hfov(
                 cam_config.focal_length_mm, cam.info.pixel_size_um, roi_w,
             ) or fov_ref[0]
@@ -1008,32 +1118,6 @@ def main() -> None:
             if config is not None and config.record_path is not None
             else None
         )
-
-        def _on_select_config(config_name: str) -> None:
-            if config is None:
-                return
-            new_cfg = config.get_config(cam.info.camera_id, config_name)
-            cam_config_ref[0] = new_cfg
-            roi_w = new_cfg.effective_roi(
-                cam.info.sensor_width_px, cam.info.sensor_height_px)[2]
-            fov_ref[0] = compute_hfov(
-                new_cfg.focal_length_mm, cam.info.pixel_size_um, roi_w) or fov_ref[0]
-            cam.meta.telescope_description = new_cfg.telescope_description
-            cam.meta.focal_length_mm       = new_cfg.focal_length_mm
-            if new_cfg.gain is not None:
-                cam.gain = new_cfg.gain
-
-        telescope_configs = (
-            config.telescope_descriptions(cam.info.camera_id) if config else []
-        )
-
-        def _start_focus_mode() -> None:
-            if state.recording and recorder is not None:
-                state.recording = False
-                recorder.stop()
-            state.focus_state = FocusState.WAITING
-            state.mode        = ViewMode.LIVE
-            _close_menu()
 
         # -- image save / gallery setup --------------------------------------
         image_path: Path | None = config.image_path if config else None
@@ -1084,15 +1168,11 @@ def main() -> None:
 
         action_menu = _build_action_menu(
             state,
-            on_connect       = _connect_mount,
-            on_disconnect    = _disconnect_mount,
-            on_start_focus   = _start_focus_mode,
-            telescope_configs = telescope_configs,
-            on_select_config  = _on_select_config,
-            active_desc_fn    = lambda: cam_config_ref[0].telescope_description or "Telescope",
-            recorder         = recorder,
-            on_save          = _on_save,
-            on_quit          = _on_quit,
+            on_connect    = _connect_mount,
+            on_disconnect = _disconnect_mount,
+            recorder      = recorder,
+            on_save       = _on_save,
+            on_quit       = _on_quit,
         )
 
         def _on_moon_mode() -> None:
@@ -1110,9 +1190,11 @@ def main() -> None:
 
         dispatcher = InputDispatcher(
             state, action_menu,
-            zoom_step = 1.2,
-            zoom_min  = 1.0,
-            zoom_max  = config.max_zoom if config else 5.0,
+            zoom_step       = 1.2,
+            zoom_min        = 1.0,
+            zoom_max        = config.max_zoom         if config else 5.0,
+            sky_map_fov_min = config.sky_map.fov_min  if config else 10.0,
+            sky_map_fov_max = config.sky_map.fov_max  if config else 60.0,
         )
 
         actual_gain = cam.gain
@@ -1141,6 +1223,7 @@ def main() -> None:
                         flat        = not _focus_hardware_roi and grabber.cal_path is not None,
                         dpc         = False,
                         demosaic    = grabber.pattern is not None,
+                        median      = True,
                     )
                     if result.status == GrabStatus.WORKING:
                         time.sleep(0.001)
@@ -1188,11 +1271,23 @@ def main() -> None:
             sensor_cy = roi_y + int(state.focus_center_y * roi_h)
             sensor_w  = cam.info.sensor_width_px
             sensor_h  = cam.info.sensor_height_px
-            fx = max(0, min(sensor_w - 200, (sensor_cx - 100) & ~1))
-            fy = max(0, min(sensor_h - 200, (sensor_cy - 100) & ~1))
-            cam.set_roi(x=fx, y=fy, width=200, height=200)
+            fx = max(0, min(sensor_w - FOCUS_ROI_HALF * 2, (sensor_cx - FOCUS_ROI_HALF) & ~1))
+            fy = max(0, min(sensor_h - FOCUS_ROI_HALF * 2, (sensor_cy - FOCUS_ROI_HALF) & ~1))
+            cam.set_roi(x=fx, y=fy, width=FOCUS_ROI_HALF * 2, height=FOCUS_ROI_HALF * 2)
             _focus_hardware_roi = True
             _restart_grab()
+
+        def _focus_here(cx: float, cy: float) -> None:
+            """Immediately activate focus centred at normalised window coords (cx, cy)."""
+            if state.recording and recorder is not None:
+                state.recording = False
+                recorder.stop()
+            state.focus_center_x = cx
+            state.focus_center_y = cy
+            state.mode            = ViewMode.LIVE
+            _enter_focus_active()
+            state.focus_state     = FocusState.ACTIVE
+            _close_menu()
 
         def _exit_focus() -> None:
             nonlocal _focus_roi_saved, _focus_hardware_roi
@@ -1216,8 +1311,13 @@ def main() -> None:
         t_last_move = time.monotonic()
         cursor_pos  = (win_w // 2, win_h // 2)
 
-        alert_timer = 0.0
+        alert_timer   = 0.0
+        alert_message = ""
         ov_table: list[dict] = []
+
+        # Overlay cache — recomputed only when inputs change or menu closes
+        _ov_surf: pygame.Surface | None = None
+        _ov_key:  tuple                 = ()
 
         running = True
         while running:
@@ -1241,12 +1341,6 @@ def main() -> None:
                             running = False
                     elif state.focus_state != FocusState.OFF:
                         _exit_focus()
-                    elif event.key == pygame.K_f:
-                        if state.recording and recorder is not None:
-                            state.recording = False
-                            recorder.stop()
-                        state.focus_state = FocusState.WAITING
-                        state.mode        = ViewMode.LIVE
                     elif event.key == pygame.K_r and recorder is not None:
                         if state.recording:
                             state.recording = False
@@ -1263,13 +1357,7 @@ def main() -> None:
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos
 
-                    if state.focus_state == FocusState.WAITING:
-                        state.focus_center_x = mx / win_w
-                        state.focus_center_y = my / win_h
-                        _enter_focus_active()
-                        state.focus_state = FocusState.ACTIVE
-
-                    elif state.focus_state == FocusState.ACTIVE:
+                    if state.focus_state == FocusState.ACTIVE and event.button == 1:
                         _exit_focus()
 
                     elif event.button == 1:
@@ -1336,33 +1424,122 @@ def main() -> None:
                         if state.active_menu:
                             _close_menu()
 
-                    elif event.button == 2:
-                        if dispatcher.on_middle_click():
-                            alert_timer = ALERT_DURATION
-
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 3 and dispatcher.on_right_button_up():
-                        # was a click (not a drag) — open context menu
-                        if not state.active_menu:
+                        if not state.active_menu and state.focus_state == FocusState.ACTIVE:
+                            m = Menu()
+                            m.add(MenuItem("Exit focus mode", action=_exit_focus))
+                            context_menu_ref[0] = m
+                            state.context_menu_pos = event.pos
+                            _open_menu("context")
+                        elif not state.active_menu:
                             mx, my = event.pos
+                            lx = mx - img_rect.left
+                            ly = my - img_rect.top
                             near = None
                             for entry in ov_table:
-                                d2 = (entry["px"] - mx) ** 2 + (entry["py"] - my) ** 2
+                                d2 = (entry["px"] - lx) ** 2 + (entry["py"] - ly) ** 2
                                 if d2 < 25 * 25:
                                     near = entry
                                     break
 
-                            def _slew_to_cursor() -> None:
-                                if mount_holder[0] is not None:
-                                    alert_timer = ALERT_DURATION
+                            def _cursor_to_radec() -> tuple[float, float] | None:
+                                """Convert the right-click screen position to RA/Dec."""
+                                if mount_holder[0] is None:
+                                    return None
+                                try:
+                                    ra_h, dec_deg_m = mount_holder[0].position
+                                except Exception:
+                                    return None
+                                alt_m, az_m = radec_to_altaz(ra_h, dec_deg_m, lat, lon)
+                                aspect_m = img_rect.height / img_rect.width
+                                nx = (mx - img_rect.left) / img_rect.width
+                                ny = (my - img_rect.top)  / img_rect.height
+                                if state.all_sky_mode:
+                                    fov = state.sky_map_fov
+                                    d_az  = (state.zoom_center_x - 0.5) * fov
+                                    d_alt = -(state.zoom_center_y - 0.5) * fov * aspect_m
+                                else:
+                                    fov   = fov_ref[0] / state.zoom_level
+                                    d_az  = (state.zoom_center_x - 0.5) * fov_ref[0]
+                                    d_alt = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect_m
+                                center_alt = alt_m + d_alt
+                                center_az  = az_m  + d_az
+                                click_az   = center_az  + (nx - 0.5) * fov
+                                click_alt  = center_alt - (ny - 0.5) * fov * aspect_m
+                                return altaz_to_radec(click_alt, click_az, lat, lon)
 
-                            context_menu_ref[0] = _build_context_menu(
-                                near_object     = near is not None,
-                                object_name     = near["name"] if near else "",
-                                on_focus        = _start_focus_mode,
-                                on_slew         = _slew_to_cursor,
-                                mount_connected = state.mount_connected,
-                            )
+                            def _do_slew() -> None:
+                                nonlocal alert_timer, alert_message
+                                coords = _cursor_to_radec()
+                                if coords is None:
+                                    return
+                                try:
+                                    mount_holder[0].slew_to(*coords)
+                                    alert_message = "Caution: Mount is moving"
+                                except Exception as exc:
+                                    alert_message = f"Slew failed: {exc}"
+                                alert_timer = ALERT_DURATION
+
+                            def _do_sync() -> None:
+                                nonlocal alert_timer, alert_message
+                                if near is None or mount_holder[0] is None:
+                                    return
+                                ra_h    = near["ra_deg"] / 15.0   # degrees → hours
+                                dec_deg = near["dec_deg"]
+                                try:
+                                    mount_holder[0].sync(ra_h, dec_deg)
+                                    state.mount_tracking = True
+                                    alert_message = "Mount synced"
+                                except Exception as exc:
+                                    alert_message = f"Sync failed: {exc}"
+                                alert_timer = ALERT_DURATION
+
+                            def _enter_sky_map() -> None:
+                                state.all_sky_mode   = True
+                                state.overlay_active = True
+                                state.sky_map_fov    = (config.sky_map.fov_default
+                                                        if config else 20.0)
+                                state.zoom_center_x  = 0.5
+                                state.zoom_center_y  = 0.5
+                                # Snapshot the active camera's FOV for the FOV box
+                                state.sky_map_cam_fov_h = fov_ref[0]
+                                cw = cam_w_ref[0] if cam_w_ref[0] > 0 else 1
+                                ch = cam_h_ref[0] if cam_h_ref[0] > 0 else 1
+                                state.sky_map_cam_fov_v = fov_ref[0] * ch / cw
+                                _close_menu()
+
+                            def _exit_sky_map() -> None:
+                                state.all_sky_mode      = False
+                                state.overlay_active    = False
+                                state.zoom_center_x     = 0.5
+                                state.zoom_center_y     = 0.5
+                                state.sky_map_cam_fov_h = None
+                                state.sky_map_cam_fov_v = None
+                                _close_menu()
+
+                            if state.all_sky_mode:
+                                context_menu_ref[0] = _build_context_menu(
+                                    near_object     = near is not None,
+                                    object_name     = near["name"] if near else "",
+                                    on_focus        = lambda: _focus_here(*_screen_to_sensor_norm(mx, my, img_rect, state)),
+                                    on_slew         = _do_slew,
+                                    on_sync         = _do_sync,
+                                    on_sky_map      = None,
+                                    mount_connected = state.mount_connected,
+                                    in_sky_map      = True,
+                                    on_exit_sky_map = _exit_sky_map,
+                                )
+                            else:
+                                context_menu_ref[0] = _build_context_menu(
+                                    near_object     = near is not None,
+                                    object_name     = near["name"] if near else "",
+                                    on_focus        = lambda: _focus_here(*_screen_to_sensor_norm(mx, my, img_rect, state)),
+                                    on_slew         = _do_slew,
+                                    on_sync         = _do_sync,
+                                    on_sky_map      = _enter_sky_map,
+                                    mount_connected = state.mount_connected,
+                                )
                             state.context_menu_pos = event.pos
                             _open_menu("context")
 
@@ -1408,6 +1585,8 @@ def main() -> None:
             except queue.Empty:
                 result = None
 
+            _stack_dirty = False   # set True when a new frame is added to the stacker
+
             if result is not None and result.status == GrabStatus.SUCCESS and not state.paused:
                 now = time.monotonic()
                 fps_display  = 1.0 / max(now - t_last_frame, 1e-6)
@@ -1426,32 +1605,43 @@ def main() -> None:
                 if state.focus_state == FocusState.OFF:
                     _cal_ok = result.calibrated
 
-                if state.focus_state == FocusState.ACTIVE:
-                    if _focus_hardware_roi:
-                        data8 = stretch_to_uint8(fdata)
-                    else:
-                        h, w = fdata.shape[:2]
-                        cx = int(state.focus_center_x * w)
-                        cy = int(state.focus_center_y * h)
-                        x1, y1 = max(0, cx - FOCUS_ROI_HALF), max(0, cy - FOCUS_ROI_HALF)
-                        x2, y2 = min(w, cx + FOCUS_ROI_HALF), min(h, cy + FOCUS_ROI_HALF)
-                        data8 = stretch_to_uint8(fdata[y1:y2, x1:x2])
-                    last_surface = pygame.transform.smoothscale(
-                        to_surface(data8), (img_rect.width, img_rect.height))
+                # Skip expensive display processing while a menu is open —
+                # last_surface stays frozen behind the opaque panel.
+                if not state.active_menu:
+                    if state.focus_state == FocusState.ACTIVE:
+                        if _focus_hardware_roi:
+                            data8 = stretch_to_uint8(fdata)
+                        else:
+                            h, w = fdata.shape[:2]
+                            cx = int(state.focus_center_x * w)
+                            cy = int(state.focus_center_y * h)
+                            x1, y1 = max(0, cx - FOCUS_ROI_HALF), max(0, cy - FOCUS_ROI_HALF)
+                            x2, y2 = min(w, cx + FOCUS_ROI_HALF), min(h, cy + FOCUS_ROI_HALF)
+                            data8 = stretch_to_uint8(fdata[y1:y2, x1:x2])
+                        last_surface = pygame.transform.smoothscale(
+                            to_surface(data8), (img_rect.width, img_rect.height))
 
-                elif state.mode == ViewMode.LIVE:
-                    ae.update(fdata)
-                    data8 = stretch_to_uint8(fdata)
-                    data8 = _apply_brightness(data8, state.brightness)
-                    last_surface = pygame.transform.smoothscale(
-                        to_surface(data8), (img_rect.width, img_rect.height))
+                    elif state.mode == ViewMode.LIVE:
+                        ae.update(fdata)
+                        data8 = stretch_to_uint8(fdata)
+                        data8 = _apply_brightness(data8, state.brightness)
+                        last_surface = pygame.transform.smoothscale(
+                            to_surface(data8), (img_rect.width, img_rect.height))
 
                 else:
+                    # Menu open: still run AE so exposure stays current
+                    if state.mode == ViewMode.LIVE:
+                        ae.update(fdata)
+
+                if state.mode == ViewMode.ACCUMULATE:
                     stacker.add_frame(fdata, stack_seq.current)
+                    _stack_dirty = True
                     if state.stack_exposure is None:
                         stack_seq.advance()
 
-            if state.mode == ViewMode.ACCUMULATE:
+            # Reprocess the stack only when a new frame was added, not every
+            # render iteration — get_display_frame() is expensive on large images.
+            if state.mode == ViewMode.ACCUMULATE and _stack_dirty and not state.active_menu:
                 display8 = stacker.get_display_frame(sky_sub_scale=state.sky_subtraction)
                 if display8 is not None:
                     display8     = _apply_brightness(display8, state.brightness)
@@ -1464,12 +1654,10 @@ def main() -> None:
             # Central region background
             pygame.draw.rect(screen, BLACK, layout["central"])
 
-            if last_surface is not None:
+            if state.all_sky_mode:
+                pass  # black background; sky overlay renders below
+            elif last_surface is not None:
                 screen.blit(_apply_zoom_pan(last_surface, state), img_rect.topleft)
-                if state.all_sky_mode:
-                    dark = pygame.Surface((img_rect.width, img_rect.height), pygame.SRCALPHA)
-                    dark.fill((0, 0, 0, 180))
-                    screen.blit(dark, img_rect.topleft)
             else:
                 f = _font(14)
                 label = f.render("Waiting for first frame...", True, DIM)
@@ -1479,53 +1667,112 @@ def main() -> None:
 
             # Sky / Moon overlay
             if state.overlay_active:
-                ov_table: list[dict] = []
+                # Build a cache key from all overlay inputs.
+                # compute_overlay is expensive; skip it when the key hasn't
+                # changed (mount barely moves between frames) and always skip
+                # it when a menu is open (overlay is hidden behind the panel).
                 try:
-                    if state.moon_mode:
-                        # Moon feature overlay — disk assumed centred in the source image
+                    if state.all_sky_mode and mount_holder[0] is not None:
+                        ra_h, dec_deg = mount_holder[0].position
+                        alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
+                        aspect = img_rect.height / img_rect.width
+                        new_key = (
+                            "sky",
+                            round(alt_deg, 2), round(az_deg, 2),
+                            round(state.sky_map_fov, 2),
+                            round(state.zoom_center_x, 4),
+                            round(state.zoom_center_y, 4),
+                            img_rect.width, img_rect.height,
+                        )
+                        if new_key != _ov_key and not state.active_menu:
+                            d_az  = (state.zoom_center_x - 0.5) * state.sky_map_fov
+                            d_alt = -(state.zoom_center_y - 0.5) * state.sky_map_fov * aspect
+                            ov_arr, ov_table = compute_overlay(
+                                catalog,
+                                fov_deg     = state.sky_map_fov,
+                                alt_deg     = alt_deg + d_alt,
+                                az_deg      = az_deg + d_az,
+                                image_shape = (img_rect.height, img_rect.width),
+                                lat_deg     = lat,
+                                lon_deg     = lon,
+                                style       = overlay_style,
+                                constellation_lines = constellation_lines,
+                                cam_fov_h_deg = state.sky_map_cam_fov_h,
+                                cam_fov_v_deg = state.sky_map_cam_fov_v,
+                                cam_alt_deg   = alt_deg,
+                                cam_az_deg    = az_deg,
+                            )
+                            _ov_surf = pygame.image.frombuffer(
+                                ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
+                            _ov_key = new_key
+
+                    elif state.moon_mode:
                         cw, ch = img_rect.width, img_rect.height
                         moon_r_src = (MOON_ANGULAR_RADIUS_DEG / fov_ref[0]) * cw
                         moon_r_px  = moon_r_src * state.zoom_level
-                        moon_cx = (0.5 - state.zoom_center_x) * state.zoom_level * cw + cw / 2
-                        moon_cy = (0.5 - state.zoom_center_y) * state.zoom_level * ch + ch / 2
-                        ov_arr, ov_table = compute_moon_overlay(
-                            moon_catalog,
-                            moon_cx      = moon_cx,
-                            moon_cy      = moon_cy,
-                            moon_r       = moon_r_px,
-                            image_shape  = (ch, cw),
-                            min_diameter_km = max(0.0, 20.0 * (50.0 / max(moon_r_px, 1))),
+                        new_key = (
+                            "moon",
+                            round(state.zoom_level, 4),
+                            round(state.zoom_center_x, 4),
+                            round(state.zoom_center_y, 4),
+                            cw, ch,
                         )
+                        if new_key != _ov_key and not state.active_menu:
+                            moon_cx = (0.5 - state.zoom_center_x) * state.zoom_level * cw + cw / 2
+                            moon_cy = (0.5 - state.zoom_center_y) * state.zoom_level * ch + ch / 2
+                            ov_arr, ov_table = compute_moon_overlay(
+                                moon_catalog,
+                                moon_cx         = moon_cx,
+                                moon_cy         = moon_cy,
+                                moon_r          = moon_r_px,
+                                image_shape     = (ch, cw),
+                                min_diameter_km = max(0.0, 20.0 * (50.0 / max(moon_r_px, 1))),
+                            )
+                            _ov_surf = pygame.image.frombuffer(
+                                ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
+                            _ov_key = new_key
+
                     elif mount_holder[0] is not None:
                         ra_h, dec_deg = mount_holder[0].position
                         alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
                         eff_fov = fov_ref[0] / state.zoom_level
                         aspect  = img_rect.height / img_rect.width
-                        d_az    = (state.zoom_center_x - 0.5) * fov_ref[0]
-                        d_alt   = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect
-                        ov_arr, ov_table = compute_overlay(
-                            catalog,
-                            fov_deg     = eff_fov,
-                            alt_deg     = alt_deg + d_alt,
-                            az_deg      = az_deg + d_az,
-                            image_shape = (img_rect.height, img_rect.width),
-                            lat_deg     = lat,
-                            lon_deg     = lon,
+                        new_key = (
+                            "normal",
+                            round(alt_deg, 2), round(az_deg, 2),
+                            round(eff_fov, 3),
+                            round(state.zoom_center_x, 4),
+                            round(state.zoom_center_y, 4),
+                            img_rect.width, img_rect.height,
                         )
+                        if new_key != _ov_key and not state.active_menu:
+                            d_az  = (state.zoom_center_x - 0.5) * fov_ref[0]
+                            d_alt = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect
+                            ov_arr, ov_table = compute_overlay(
+                                catalog,
+                                fov_deg     = eff_fov,
+                                alt_deg     = alt_deg + d_alt,
+                                az_deg      = az_deg + d_az,
+                                image_shape = (img_rect.height, img_rect.width),
+                                lat_deg     = lat,
+                                lon_deg     = lon,
+                                style       = overlay_style,
+                                constellation_lines = constellation_lines,
+                            )
+                            _ov_surf = pygame.image.frombuffer(
+                                ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
+                            _ov_key = new_key
+
                     else:
-                        ov_arr = None
-                    if ov_arr is not None:
-                        ov_surf = pygame.image.frombuffer(
-                            ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
-                        screen.blit(ov_surf, img_rect.topleft)
+                        _ov_surf = None
+
                 except Exception as exc:
                     logging.warning("Overlay error: %s", exc)
-                _render_hover_label(screen, ov_table, *cursor_pos)
 
-            # Focus waiting crosshair
-            if state.focus_state == FocusState.WAITING:
-                _render_focus_waiting(screen, win_w, layout["central"].y)
-                _draw_cursor(screen, *cursor_pos)
+                if _ov_surf is not None:
+                    screen.blit(_ov_surf, img_rect.topleft)
+                _render_constellation_labels(screen, ov_table, img_rect)
+                _render_hover_label(screen, ov_table, *cursor_pos, img_rect=img_rect)
 
             # Menus
             if state.active_menu == "action":
@@ -1548,7 +1795,7 @@ def main() -> None:
 
             # Alert overlay
             if alert_timer > 0:
-                _render_alert(screen, "Caution: Mount is moving", win_w, win_h)
+                _render_alert(screen, alert_message, win_w, win_h)
 
             # Status bars (drawn last so they sit on top)
             if state.focus_state == FocusState.ACTIVE:
@@ -1588,7 +1835,6 @@ def main() -> None:
 
             cursor_visible = (
                 state.active_menu is not None
-                or state.focus_state == FocusState.WAITING
                 or (state.focus_state == FocusState.OFF
                     and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY)
             )

@@ -59,6 +59,8 @@ class Recorder:
         tifffile.imwrite(
             str(path),
             frame.data,
+            photometric='minisblack',
+            metadata=None,
             description=json.dumps(_meta_to_dict(frame.meta)),
         )
 
@@ -79,6 +81,7 @@ def _meta_to_dict(meta) -> dict:
         "roi_width":             meta.roi_width,
         "roi_height":            meta.roi_height,
         "flip":                  meta.flip,
+        "pixel_size_um":         meta.pixel_size_um,
         "telescope_description": meta.telescope_description,
         "focal_length_mm":       meta.focal_length_mm,
         "RA":                    meta.RA,

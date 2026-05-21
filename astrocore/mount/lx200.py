@@ -117,6 +117,15 @@ class Lx200Mount(Mount):
         self._cmdn(":Te#")   # AM5 requires explicit tracking enable after unpark
 
     @property
+    def is_tracking(self) -> bool:
+        """Query tracking rate via :GT#; True if rate > 0 (mount is tracking)."""
+        try:
+            rate = self._cmd(":GT#")
+            return float(rate) > 0.1
+        except Exception:
+            return False
+
+    @property
     def is_slewing(self) -> bool:
         """True while the mount is executing a slew.
 

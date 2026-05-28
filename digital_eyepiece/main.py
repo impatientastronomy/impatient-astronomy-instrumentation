@@ -549,12 +549,14 @@ def _vertical_menu_hit(
     return None
 
 
-# --- Controls panel (horizontal value selectors) ----------------------------
+# --- Controls panel (sliders) ------------------------------------------------
 
-_CTRL_ROW_H    = 30
-_CTRL_LABEL_W  = 110
-_CTRL_VAL_W    = 36
-_CTRL_PAD      = 5
+_CTRL_ROW_H   = 36
+_CTRL_LABEL_W = 108
+_CTRL_VAL_W   = 54
+_CTRL_PAD     = 6
+_CTRL_TRACK_H = 4
+_CTRL_THUMB_R = 7
 
 _CONTROLS_ROWS = [
     ("Stream Exp",   "stream_exposure",  _EXPOSURE_STEPS),
@@ -571,6 +573,19 @@ def _controls_panel_rect(layout: dict) -> pygame.Rect:
     return pygame.Rect(layout["status_x"], central.bottom - ph, layout["status_w"], ph)
 
 
+def _ctrl_track_x(pr: pygame.Rect) -> int:
+    return pr.x + _CTRL_LABEL_W + _CTRL_VAL_W + _CTRL_PAD
+
+
+def _ctrl_track_w(pr: pygame.Rect) -> int:
+    return pr.right - _ctrl_track_x(pr) - _CTRL_PAD
+
+
+def _ctrl_thumb_x(track_x: int, track_w: int, idx: int, n_steps: int) -> int:
+    t = idx / max(1, n_steps - 1)
+    return track_x + int(t * track_w)
+
+
 def _render_controls_menu(
     surface: pygame.Surface,
     layout: dict,
@@ -580,7 +595,6 @@ def _render_controls_menu(
     central = layout["central"]
     pr = _controls_panel_rect(layout)
 
-    # Dim upper part of image
     overlay = pygame.Surface((central.width, central.height), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 160))
     surface.blit(overlay, (central.x, central.y))
@@ -590,47 +604,64 @@ def _render_controls_menu(
     surface.blit(panel, (pr.x, pr.y))
     pygame.draw.rect(surface, DIM, pr, 1)
 
-    f_lbl  = _font(max(9, _CTRL_ROW_H - 18))
-    f_val  = _font(max(9, _CTRL_ROW_H - 20))
-    mx, my = cursor_pos
+    f_lbl    = _font(13)
+    f_val    = _font(13)
+    f_tip    = _font(11)
+    mx, my   = cursor_pos
+    track_x  = _ctrl_track_x(pr)
+    track_w  = _ctrl_track_w(pr)
 
     for ri, (label, attr, steps) in enumerate(_CONTROLS_ROWS):
-        ry = pr.y + _CTRL_PAD + ri * _CTRL_ROW_H
+        cy = pr.y + _CTRL_PAD + ri * _CTRL_ROW_H + _CTRL_ROW_H // 2
         current = getattr(state, attr)
+        cur_idx = next((i for i, (_, v) in enumerate(steps) if v == current), 0)
 
-        # Row label
+        # Label
         lbl = f_lbl.render(label + ":", True, GREY)
-        surface.blit(lbl, (pr.x + _CTRL_PAD, ry + (_CTRL_ROW_H - lbl.get_height()) // 2))
+        surface.blit(lbl, (pr.x + _CTRL_PAD, cy - lbl.get_height() // 2))
 
-        # Value chips
-        vx = pr.x + _CTRL_LABEL_W
-        for vi, (vtext, vval) in enumerate(steps):
-            chip = pygame.Rect(vx, ry + _CTRL_PAD, _CTRL_VAL_W - 2, _CTRL_ROW_H - 2 * _CTRL_PAD)
-            selected = (current == vval)
-            hovered  = chip.collidepoint(mx, my)
+        # Current value — always visible, left of track
+        val_text = steps[cur_idx][0]
+        vsurf = f_val.render(val_text, True, WHITE)
+        vx = pr.x + _CTRL_LABEL_W + (_CTRL_VAL_W - vsurf.get_width()) // 2
+        surface.blit(vsurf, (vx, cy - vsurf.get_height() // 2))
 
-            bg = (60, 60, 60) if hovered else (30, 30, 30) if selected else BLACK
-            pygame.draw.rect(surface, bg, chip)
-            if selected or hovered:
-                pygame.draw.rect(surface, GREY if selected else DIM, chip, 1)
+        # Track rail
+        rail = pygame.Rect(track_x, cy - _CTRL_TRACK_H // 2, track_w, _CTRL_TRACK_H)
+        pygame.draw.rect(surface, (50, 50, 50), rail, border_radius=2)
 
-            color  = WHITE if selected else GREY
-            vlabel = f_val.render(vtext, True, color)
-            surface.blit(vlabel, (
-                chip.x + (chip.width  - vlabel.get_width())  // 2,
-                chip.y + (chip.height - vlabel.get_height()) // 2,
-            ))
-            vx += _CTRL_VAL_W
+        # Filled portion (left of thumb)
+        thumb_x = _ctrl_thumb_x(track_x, track_w, cur_idx, len(steps))
+        if thumb_x > track_x:
+            filled = pygame.Rect(track_x, cy - _CTRL_TRACK_H // 2,
+                                 thumb_x - track_x, _CTRL_TRACK_H)
+            pygame.draw.rect(surface, GREY, filled, border_radius=2)
+
+        # Thumb
+        pygame.draw.circle(surface, WHITE, (thumb_x, cy), _CTRL_THUMB_R)
+
+        # Hover: ghost thumb + tooltip
+        hover_zone = pygame.Rect(track_x - _CTRL_THUMB_R, cy - _CTRL_THUMB_R * 2,
+                                 track_w + _CTRL_THUMB_R * 2, _CTRL_THUMB_R * 4)
+        if hover_zone.collidepoint(mx, my):
+            raw_t     = (mx - track_x) / max(1, track_w)
+            hover_idx = max(0, min(len(steps) - 1, round(raw_t * (len(steps) - 1))))
+            if hover_idx != cur_idx:
+                ghost_x = _ctrl_thumb_x(track_x, track_w, hover_idx, len(steps))
+                pygame.draw.circle(surface, DIM, (ghost_x, cy), _CTRL_THUMB_R - 1)
+                tip = f_tip.render(steps[hover_idx][0], True, GREY)
+                tip_x = max(pr.x + _CTRL_PAD,
+                            min(pr.right - tip.get_width() - _CTRL_PAD,
+                                ghost_x - tip.get_width() // 2))
+                tip_y = cy - _CTRL_THUMB_R - tip.get_height() - 2
+                surface.blit(tip, (tip_x, tip_y))
 
 
 def _controls_hit(
     pos: tuple[int, int],
     layout: dict,
 ) -> tuple[str, object] | None:
-    """
-    Return (attr_name, new_value) if pos is over a Controls panel value chip.
-    Returns None if pos is outside the panel.
-    """
+    """Return (attr_name, new_value) if pos lands on a slider track, else None."""
     pr = _controls_panel_rect(layout)
     mx, my = pos
     if not pr.collidepoint(mx, my):
@@ -641,15 +672,14 @@ def _controls_hit(
         return None
     _label, attr, steps = _CONTROLS_ROWS[ri]
 
-    # Find which value chip was clicked
-    vx = pr.x + _CTRL_LABEL_W
-    for vi, (vtext, vval) in enumerate(steps):
-        chip = pygame.Rect(vx, pr.y + _CTRL_PAD + ri * _CTRL_ROW_H,
-                           _CTRL_VAL_W - 2, _CTRL_ROW_H - 2 * _CTRL_PAD)
-        if chip.collidepoint(mx, my):
-            return (attr, vval)
-        vx += _CTRL_VAL_W
-    return None
+    track_x = _ctrl_track_x(pr)
+    track_w = _ctrl_track_w(pr)
+    if mx < track_x or mx > track_x + track_w:
+        return None
+
+    raw_t = (mx - track_x) / max(1, track_w)
+    idx   = max(0, min(len(steps) - 1, round(raw_t * (len(steps) - 1))))
+    return (attr, steps[idx][1])
 
 
 # --- Context menu -----------------------------------------------------------

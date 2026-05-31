@@ -25,8 +25,10 @@ htmlcov/
 # macOS
 .DS_Store
 
-# ZWO ASI SDK (binary, not committed to repo)
+# ZWO ASI SDK — exclude everything except the files needed for deployment
 astrocore/camera/asi_sdk/
+!astrocore/camera/asi_sdk/lib/asi.rules
+!astrocore/camera/asi_sdk/lib/armv8/libASICamera2.so
 
 # Legacy Matlab
 legacy_matlab/

@@ -17,7 +17,8 @@
       "WebFetch(domain:www.pishop.us)",
       "WebFetch(domain:www.waveshare.com)",
       "WebSearch",
-      "WebFetch(domain:gist.github.com)"
+      "WebFetch(domain:gist.github.com)",
+      "Bash(git add *)"
     ]
   }
 }

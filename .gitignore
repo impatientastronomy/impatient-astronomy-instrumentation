@@ -29,6 +29,7 @@ htmlcov/
 astrocore/camera/asi_sdk/
 !astrocore/camera/asi_sdk/lib/asi.rules
 !astrocore/camera/asi_sdk/lib/armv8/libASICamera2.so
+!astrocore/camera/asi_sdk/lib/armv8/libASICamera2.so.1.41
 
 # Legacy Matlab
 legacy_matlab/

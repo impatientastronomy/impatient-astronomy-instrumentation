@@ -128,8 +128,9 @@ If the display settings were added, reboot before continuing:
 sudo reboot
 ```
 
-The `libASICamera2.so` library for arm64 is included in the repository and is loaded
-automatically — no additional environment variables are required.
+The ZWO ASI camera library for arm64 (`libASICamera2.so.1.41`, with a `libASICamera2.so`
+symlink) is included in the repository and is loaded automatically — no additional
+environment variables are required.
 
 ---
 
@@ -278,8 +279,14 @@ running `udevadm trigger`.  Confirm with: `ls -l /dev/bus/usb/...` — the camer
 should have world-readable permissions (`rw-rw-rw-`).
 
 **`libASICamera2.so` not found**
-The library ships inside the repository and is loaded automatically on a 64-bit Pi (arm64).
-If you see a load error, confirm you are running 64-bit OS: `uname -m` should print `aarch64`.
+The repository includes both `libASICamera2.so` (a symlink) and the real versioned library
+`libASICamera2.so.1.41`.  If the error appears, check that both files are present:
+```bash
+ls -lh astrocore/camera/asi_sdk/lib/armv8/
+```
+You should see `libASICamera2.so.1.41` (~3.9 MB) and `libASICamera2.so` pointing to it.
+If either is missing, run `git pull`.  Also confirm you are running a 64-bit OS:
+`uname -m` should print `aarch64`.
 
 **Blank or flickering display**
 Confirm the `hdmi_timings` line in `/boot/firmware/config.txt` is present and exactly as

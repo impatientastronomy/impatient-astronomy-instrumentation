@@ -70,7 +70,7 @@ from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
 from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
-_CATALOG_PATH            = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skyChart.csv"
+_CATALOG_PATH            = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skychart.csv"
 _MOON_CATALOG_PATH       = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
 _OVERLAY_STYLE_PATH      = Path(__file__).resolve().parent.parent / "overlay_style.yaml"
 _CONSTELLATION_PATH      = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "constellation_lines.csv"

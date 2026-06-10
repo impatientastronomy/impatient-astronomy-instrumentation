@@ -173,12 +173,10 @@ without dark or flat correction and prints a warning.  You can add calibration d
 
 ## 7. Connect the display
 
-After rebooting in step 5, the Waveshare display should come up at 720×720.  If it
-remains blank:
-- Confirm the micro-HDMI cable is in the **HDMI 0** port (closest to the USB-C power
-  connector on the Pi 5).
-- The display is HDMI-powered; a marginal cable can cause instability — try a different
-  one if the image flickers or doesn't appear.
+After rebooting in step 5, the Waveshare display should come up at 720×720.  If it remains blank, check that:
+- The micro-HDMI cable is plugged into the **HDMI 0** port on the Pi 5 (the one closest
+  to the USB-C power connector).
+Also plug in the USB-USBC cable from the Pi to the display to provide power to the display.
 
 ### Touch input (optional)
 

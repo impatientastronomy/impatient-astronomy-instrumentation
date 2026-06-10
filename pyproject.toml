@@ -16,6 +16,7 @@ dependencies = [
     "tifffile>=2024",
     "zwoasi>=0.2",
     "qrcode>=7",
+    "pillow>=12.2.0",
 ]
 
 [tool.setuptools.packages.find]

@@ -62,7 +62,7 @@ from astrocore.display.moon_mapper import (
     MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog,
 )
 from astrocore.mount.coord import altaz_to_radec, radec_to_altaz
-from astrocore.pipeline.stacker import ExposureSequence, QuadrantAlignStacker, Stacker
+from astrocore.pipeline.stacker import ConstellationStacker, ExposureSequence
 from astrocore.pipeline.streaming import StreamExposure
 from digital_eyepiece.display import stretch_to_uint8, to_surface
 from digital_eyepiece.input.dispatcher import InputDispatcher
@@ -944,11 +944,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--vmount", action="store_true",
                    help="Use a virtual mount for testing (no hardware required). "
                         "Connect via Action > Telescope > Connect.")
-    p.add_argument("--stacker", choices=["phase", "quad"], default="phase",
-                   metavar="{phase,quad}",
-                   help="Alignment algorithm. 'phase' (default) = existing incremental "
-                        "phase correlation. 'quad' = experimental quadrant-based "
-                        "translation + rotation alignment.")
     p.add_argument("--fullscreen", action="store_true",
                    help="Run fullscreen at the native display resolution (default on Pi).")
     p.add_argument("--window-size", metavar="WxH", default=None,
@@ -1234,7 +1229,7 @@ def main() -> None:
 
         actual_gain = cam.gain
         ae        = StreamExposure(start=args.exposure if args.exposure is not None else 0.1)
-        stacker   = QuadrantAlignStacker() if args.stacker == "quad" else Stacker()
+        stacker = ConstellationStacker()
         stack_seq = ExposureSequence(STACKING_SEQUENCE)
 
         # Camera image dimensions — determined on first frame
@@ -1669,9 +1664,10 @@ def main() -> None:
                         ae.update(fdata)
 
                 if state.mode == ViewMode.ACCUMULATE:
-                    stacker.add_frame(fdata, stack_seq.current)
+                    actual_exp_s = result.frame.meta.exposure_seconds
+                    accepted = stacker.add_frame(fdata, actual_exp_s)
                     _stack_dirty = True
-                    if state.stack_exposure is None:
+                    if state.stack_exposure is None and accepted:
                         stack_seq.advance()
 
             # Reprocess the stack only when a new frame was added, not every

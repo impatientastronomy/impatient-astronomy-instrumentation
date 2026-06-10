@@ -111,7 +111,7 @@ class VirtualCamera(Camera):
                 "C{{id}}_{{filter}}_{{exposure}}us_{{temp}}C_{{index}}.tif"
             )
 
-        self._file_table = table
+        self._file_table = table.sort_values("frame_index").reset_index(drop=True)
         self._camera_id = int(table.camera_id.iloc[0])
 
         # Read first image once to learn sensor dimensions and extract metadata

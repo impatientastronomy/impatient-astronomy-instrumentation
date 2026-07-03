@@ -80,13 +80,22 @@ sudo apt install -y git libgl1 libglib2.0-0
 
 The project uses [uv](https://docs.astral.sh/uv/) to manage its Python environment.
 
+**Mac / Linux / Raspberry Pi:**
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
-
 Open a new terminal (or run `source ~/.bashrc`) so that the `uv` command is on your PATH.
 
-Verify:
+**Windows:**
+```powershell
+winget install --id=astral-sh.uv
+```
+Or in PowerShell:
+```powershell
+irm https://astral.sh/uv/install.ps1 | iex
+```
+
+Verify on any platform:
 
 ```bash
 uv --version
@@ -108,21 +117,38 @@ cd impatient-astronomy-instrumentation
 
 ## 5. Install dependencies and configure hardware
 
-A single script handles Python dependencies, the ZWO ASI camera udev rule, and the
-display timing settings:
+A single script handles Python dependencies, data directory setup, the ZWO ASI camera
+udev rule, and the display timing settings.  The script works on Mac, Windows, and
+Raspberry Pi without modification.
+
+```bash
+python3 utilities/install.py
+```
+
+On Mac and Raspberry Pi you can also use the bash shortcut:
 
 ```bash
 bash utilities/install.sh
 ```
 
-On a Raspberry Pi the script automatically:
+The script:
 - Installs all Python packages via `uv sync`
-- Copies the ZWO ASI udev rule to `/etc/udev/rules.d/` (requires sudo, will prompt)
-- Appends the Waveshare display timings to `/boot/firmware/config.txt` (requires sudo)
+- Creates `~/digital_eyepiece/{config,cals,sessions,images}/`
+- Copies `config/configuration-example.yaml` to `~/digital_eyepiece/config/configuration.yaml`
+  if no configuration file exists there yet
+- On macOS: fixes a libSDL2 conflict between opencv and pygame
+- On Raspberry Pi: copies the ZWO ASI udev rule to `/etc/udev/rules.d/` (requires sudo)
+- On Raspberry Pi: appends the Waveshare display timings and USB current setting to
+  `/boot/firmware/config.txt` (requires sudo)
+- On Raspberry Pi: pins the two USB WiFi adapters to stable names (`wlan-mount` and
+  `wlan-guest`) via a udev rule — both Edimax adapters must be plugged in when this step runs
 
 It is safe to run more than once — each step checks whether it has already been applied.
 
-If the display settings were added, reboot before continuing:
+**Note:** plug in both Edimax WiFi adapters before running the script so the WiFi naming
+step can detect their MAC addresses.
+
+If hardware settings were added, reboot before continuing:
 
 ```bash
 sudo reboot
@@ -134,13 +160,49 @@ environment variables are required.
 
 ---
 
-## 6. Create the configuration file
+## 6. Configure mount WiFi
 
-Copy the example configuration to the repo root and edit it for your setup:
+This step runs after the reboot from step 5, so the `wlan-mount` interface name is active.
+
+Open `utilities/setup_mount_wifi.sh` in a text editor and set the SSID and password to
+match your mount's WiFi hotspot.  For the ZWO AM5, find these in the ZWO app under
+**Network → Hotspot settings**.
 
 ```bash
-cp configuration.yaml configuration.yaml.bak   # keep the original as reference
-nano configuration.yaml
+nano utilities/setup_mount_wifi.sh
+```
+
+Then run it:
+
+```bash
+sudo bash utilities/setup_mount_wifi.sh
+```
+
+`wlan-mount` will now connect to the mount automatically whenever the mount is powered
+on.  No action is needed in the eyepiece software — selecting **Mount → Connect** from
+the menu is sufficient.  If the mount is off or out of range when you
+attempt to connect, the software will show an alert and continue running.
+
+To connect immediately (if the mount is already on):
+
+```bash
+nmcli connection up mount-wifi
+```
+
+---
+
+## 7. Edit the configuration file
+
+The install script created your personal configuration file at:
+
+```
+~/digital_eyepiece/config/configuration.yaml
+```
+
+Open it in a text editor:
+
+```bash
+nano ~/digital_eyepiece/config/configuration.yaml
 ```
 
 Key fields to set:
@@ -148,15 +210,16 @@ Key fields to set:
 | Field | What to change |
 |---|---|
 | `latitude` / `longitude` | Your observing location in decimal degrees |
-| `cal_path` | Absolute path to your calibration data folder (darks, flats, DPC masks) |
-| `record_path` | Absolute path where captured sessions are saved |
-| `image_path` | Path where saved eyepiece JPEG images are written |
 | `cameras.primary.id` | The camera ID stored in your ASI camera's EEPROM |
 | `cameras.primary.focal_length_mm` | Focal length of your telescope in mm |
 | `cameras.primary.cam_size` | `[width, height]` of the ROI to read from the sensor, or `[-1, -1]` for full sensor |
 | `cameras.primary.pattern` | Bayer pattern for your sensor (e.g. `GBRG`, `RGGB`) — check your camera's datasheet |
 | `cameras.primary.telescope_description` | A short label used in saved file metadata |
-| `cameras.primary.mount_driver` | Driver module for your mount (e.g. `zwo_am5`, `lx200`) |
+| `mount_driver` | Driver module for your mount (e.g. `zwo_am5`, `lx200`) |
+
+**Paths** (`cal_path`, `record_path`, `image_path`) default to subdirectories of
+`~/digital_eyepiece/` — no changes needed unless you want data elsewhere (e.g. an
+external drive).  Uncomment and edit the relevant lines to override.
 
 **Finding your camera ID:**  Connect the camera via USB and run:
 
@@ -166,12 +229,13 @@ uv run python -c "from astrocore.camera.zwo_asi import list_cameras; print(list_
 
 This prints each connected camera's model and ID.
 
-**Calibration data** is optional.  If `cal_path` doesn't exist yet, the software starts
-without dark or flat correction and prints a warning.  You can add calibration data later.
+**Calibration data** is optional.  If `~/digital_eyepiece/cals/` is empty the software
+starts without dark or flat correction and prints a warning.  You can add calibration
+data later.
 
 ---
 
-## 7. Connect the display
+## 8. Connect the display
 
 After rebooting in step 5, the Waveshare display should come up at 720×720.  If it remains blank, check that:
 - The micro-HDMI cable is plugged into the **HDMI 0** port on the Pi 5 (the one closest
@@ -185,7 +249,24 @@ capacitive touch.  Touch is not required — the eyepiece software uses a wirele
 
 ---
 
-## 8. Run the eyepiece software
+## 9. Pair the Bluetooth mouse
+
+You will need a wired USB mouse plugged into the Pi for this step.
+
+1. Click the **Bluetooth icon** in the upper-right corner of the Pi desktop taskbar.
+2. Select **Add Device**.
+3. On the Bluetooth mouse, long-press the button on the right side for about 1 second
+   until the blue light starts flashing — this puts the mouse into pairing mode.
+4. **D13** should appear in the list of available devices.  Select it.
+5. Press the side button on the mouse once more to confirm pairing.
+6. You should see **"Connection complete"**.
+
+The Pi remembers the mouse and reconnects automatically on every subsequent boot.  You
+can now unplug the wired USB mouse.
+
+---
+
+## 10. Run the eyepiece software
 
 From the repository root:
 
@@ -193,14 +274,15 @@ From the repository root:
 uv run python -m digital_eyepiece.main
 ```
 
-Or in fullscreen mode (recommended when the Pi is mounted in the eyepiece housing):
+The application opens fullscreen by default.  To run in a window instead (useful during
+development):
 
 ```bash
-uv run python -m digital_eyepiece.main --fullscreen
+uv run python -m digital_eyepiece.main --windowed
 ```
 
-The application opens a pygame window.  The ZWO camera connects automatically.  If no
-camera is found, an alert is shown and the software waits.
+The ZWO camera connects automatically.  If no camera is found, an alert is shown and
+the software waits.
 
 **To exit:** press `Q` or `Escape`.
 
@@ -212,16 +294,16 @@ For testing without hardware, replay a previously recorded session:
 uv run python -m digital_eyepiece.main --vcam <SessionFolderName>
 ```
 
-The session folder must be inside the `record_path` directory set in
-`configuration.yaml`.
+The session folder must be inside `~/digital_eyepiece/sessions/` (or the `record_path`
+override set in your configuration file).
 
 ---
 
-## 9. Optional: guest image sharing hotspot
+## 11. Optional: guest image sharing hotspot
 
-The eyepiece can broadcast a WiFi hotspot on a second wireless interface (e.g. a USB
-WiFi dongle) so observers nearby can view saved images on their phones.  The main
-`wlan0` interface remains free to connect to your mount's WiFi network.
+The eyepiece can broadcast a WiFi hotspot on `wlan-guest` so observers nearby can view
+saved images on their phones.  `wlan0` remains free for SSH and setup; `wlan-mount`
+connects to the mount's WiFi network.
 
 **Hardware required:** a USB WiFi adapter that supports AP mode (most common adapters do).
 
@@ -231,11 +313,12 @@ Run the one-time setup script:
 sudo bash utilities/setup_hotspot.sh
 ```
 
-This installs `hostapd` and `dnsmasq`, configures the `wlan1` interface with a static IP,
-and enables the captive portal redirect.  See the script header for customisation options.
+This installs `hostapd` and `dnsmasq`, configures the `wlan-guest` interface with a
+static IP, and enables the captive portal redirect.  See the script header for
+customisation options.
 
-Edit the `hotspot:` section in `configuration.yaml` if you changed the SSID, password,
-or IP address in the script.
+Edit the `hotspot:` section in `~/digital_eyepiece/config/configuration.yaml` if you
+changed the SSID, password, or IP address in the script.
 
 After setup and a reboot, the hotspot starts automatically.  To print the QR code for
 guests to scan:
@@ -246,7 +329,7 @@ uv run python utilities/print_qr.py
 
 ---
 
-## 10. Optional: auto-start on boot
+## 12. Optional: auto-start on boot
 
 To launch the eyepiece automatically when the Pi boots into the desktop, create an
 autostart entry:
@@ -257,7 +340,7 @@ cat > ~/.config/autostart/digital_eyepiece.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
 Name=Digital Eyepiece
-Exec=/home/pi/impatient-astronomy-instrumentation/.venv/bin/python -m digital_eyepiece.main --fullscreen
+Exec=/home/pi/impatient-astronomy-instrumentation/.venv/bin/python -m digital_eyepiece.main
 WorkingDirectory=/home/pi/impatient-astronomy-instrumentation
 EOF
 ```
@@ -270,6 +353,14 @@ Adjust the paths above if your username or repo location is different.
 ---
 
 ## Troubleshooting
+
+**Low-power warning on screen**
+If you are powering the Pi from a non-USB-C-PD supply (such as a 12V battery with a buck
+converter), the Pi may display a low-power warning even when the supply is capable of
+delivering 5A.  This is because the Pi expects USB-C Power Delivery negotiation to confirm
+the supply rating.  The install script adds `usb_max_current_enable=1` to
+`/boot/firmware/config.txt` to unlock the full 1.6A USB current budget regardless — the
+warning can safely be ignored once this setting is in place.
 
 **Camera not found / permission denied**
 Make sure the udev rule was installed (step 6) and that you reconnected the camera after
@@ -299,5 +390,5 @@ enable VNC, then launch the software from the Pi's own desktop session.
 
 **Calibration data warnings at startup**
 These are non-fatal.  The software runs without calibration; dark and flat correction is
-simply skipped.  See `configuration.yaml` comments for how to organise calibration data
-once you have recorded it.
+simply skipped.  Add calibration data to `~/digital_eyepiece/cals/` when you have it;
+see `config/configuration-example.yaml` for the expected folder layout.

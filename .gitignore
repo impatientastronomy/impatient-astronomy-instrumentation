@@ -30,6 +30,11 @@ astrocore/camera/asi_sdk/
 !astrocore/camera/asi_sdk/lib/asi.rules
 !astrocore/camera/asi_sdk/lib/armv8/libASICamera2.so
 !astrocore/camera/asi_sdk/lib/armv8/libASICamera2.so.1.41
+!astrocore/camera/asi_sdk/lib/win64/ASICamera2.dll
 
 # Legacy Matlab
 legacy_matlab/
+
+# User configuration — never commit personal paths or credentials
+configuration.yaml
+config/configuration.yaml

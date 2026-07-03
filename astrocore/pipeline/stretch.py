@@ -17,12 +17,12 @@ def gamma_correct(image: np.ndarray, gamma: float) -> np.ndarray:
 
 def sky_coefficient(t_accum: float) -> float:
     """Sky-subtraction strength: ramps 0 → 1 over ~30 s, starting after t = 3 s."""
-    return float(max(0.0, 1.0 - np.exp(-(t_accum - 3.0) / 10.0)))
+    return float(max(0.0, 1 - np.exp(-(t_accum - 3.0) / 10.0)))
 
 
 def saturation_coefficient(t_accum: float) -> float:
     """Saturation multiplier: ramps 1 → 2 starting around t = 7 s."""
-    return float(max(1.0, min(2.0, 2.0 - np.exp(-(t_accum - 7.0) / 4.0))))
+    return float(max(1.0, min(2, 2 - np.exp(-(t_accum - 7.0) / 4.0))))
 
 
 def auto_brightness(imdat: np.ndarray, gamma: float, skyco: float) -> float:
@@ -37,8 +37,8 @@ def auto_brightness(imdat: np.ndarray, gamma: float, skyco: float) -> float:
     skyco  : sky coefficient — used to estimate the sky-subtracted mean
     Returns: gain to multiply against gamma_correct(imdat, gamma)
     """
-    MAX_NOISE_FRAC = 0.1
-    MAX_MEAN_FRAC = 0.28
+    MAX_NOISE_FRAC = 0.07
+    MAX_MEAN_FRAC = 0.2
 
     median_val = float(np.median(imdat))
     mean_val = float(np.mean(imdat))

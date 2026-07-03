@@ -154,6 +154,7 @@ class ConstellationStacker:
         self._skipped_count: int   = 0
         self._t_accum:       float = 0.0
         self._blend:         np.ndarray | None = None
+        self._imPrc:         np.ndarray | None = None
         self._sky_model:     np.ndarray | None = None
         self._sky_dirty:     bool = True
 
@@ -185,6 +186,7 @@ class ConstellationStacker:
         self._skipped_count = 0
         self._t_accum       = 0.0
         self._blend         = None
+        self._imPrc         = None
         self._sky_model     = None
         self._sky_dirty     = True
         self._star_rows     = None
@@ -282,10 +284,11 @@ class ConstellationStacker:
 
     # ── display output ────────────────────────────────────────────────────────
 
-    def get_display_frame(self, sky_sub_scale: float = 1.0) -> np.ndarray | None:
+    def process_stack(self, sky_sub_scale: float = 1.0) -> None:
+        """Expensive processing pass — call once per new frame, not every render tick."""
         imStack = self.stack
         if imStack is None:
-            return None
+            return
 
         skyco = sky_coefficient(self._t_accum) * sky_sub_scale
         satco = saturation_coefficient(self._t_accum)
@@ -301,12 +304,19 @@ class ConstellationStacker:
         if imPrc.ndim == 3:
             imPrc = adjust_saturation(imPrc, satco)
 
-        if self._blend is None:
-            self._blend = imPrc.copy()
-        else:
-            self._blend = (1.0 - _BLEND_ALPHA) * self._blend + _BLEND_ALPHA * imPrc
+        self._imPrc = imPrc
 
-        return (np.clip(self._blend, 0.0, 65535.0) / 256.0).astype(np.uint8)
+    def get_display_frame(self, brightness: float = 1.0) -> np.ndarray | None:
+        """Cheap temporal blend — call every render tick for smooth display."""
+        if self._imPrc is None:
+            return None
+
+        if self._blend is None:
+            self._blend = self._imPrc.copy()
+        else:
+            self._blend = (1.0 - _BLEND_ALPHA) * self._blend + _BLEND_ALPHA * self._imPrc
+
+        return (np.clip(brightness * self._blend, 0.0, 65535.0) / 256.0).astype(np.uint8)
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -479,13 +489,13 @@ class ConstellationStacker:
             rot_deg = 0.0
 
         import sys
-        print(
-            f"cstl reg: n={len(xsh_arr)}"
-            f"  xsh=[{float(xsh_arr.min()):.1f},{float(xsh_arr.max()):.1f}]"
-            f"  ysh=[{float(ysh_arr.min()):.1f},{float(ysh_arr.max()):.1f}]"
-            f"  → xshift={xshift:.2f} yshift={yshift:.2f} rot={rot_deg:.3f}°",
-            file=sys.stderr, flush=True,
-        )
+        #print(
+        #    f"cstl reg: n={len(xsh_arr)}"
+        #    f"  xsh=[{float(xsh_arr.min()):.1f},{float(xsh_arr.max()):.1f}]"
+        #    f"  ysh=[{float(ysh_arr.min()):.1f},{float(ysh_arr.max()):.1f}]"
+        #    f"  → xshift={xshift:.2f} yshift={yshift:.2f} rot={rot_deg:.3f}°",
+        #    file=sys.stderr, flush=True,
+        #)
 
         if abs(xshift) > self._maxshift or abs(yshift) > self._maxshift:
             print(f"cstl: SKIP — shift ({xshift:.1f},{yshift:.1f}) exceeds ±{self._maxshift}",

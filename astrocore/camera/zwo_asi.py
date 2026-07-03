@@ -116,6 +116,7 @@ _PLATFORM_SUBDIR: dict[tuple[str, str], tuple[str, str]] = {
     ("darwin", "x86_64"): ("mac",       "libASICamera2.dylib"),
     ("linux",  "aarch64"):("armv8",     "libASICamera2.so"),
     ("linux",  "x86_64"): ("x64",       "libASICamera2.so"),
+    ("win32",  "amd64"):  ("win64",     "ASICamera2.dll"),
 }
 
 

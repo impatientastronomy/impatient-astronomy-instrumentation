@@ -39,6 +39,7 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,6 +71,7 @@ from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
 from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
+_DATA_ROOT               = Path.home() / Path(__file__).parent.name   # ~/digital_eyepiece
 _CATALOG_PATH            = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skychart.csv"
 _MOON_CATALOG_PATH       = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
 _OVERLAY_STYLE_PATH      = Path(__file__).resolve().parent.parent / "overlay_style.yaml"
@@ -222,6 +224,7 @@ def _build_action_menu(
     recorder,
     on_save,
     on_quit,
+    mount_driver: str = "",
 ) -> Menu:
     def _mode_label() -> str:
         return "Start Streaming" if state.mode == ViewMode.ACCUMULATE else "Start Stacking"
@@ -258,7 +261,8 @@ def _build_action_menu(
         else:
             on_connect()
 
-    telescope_submenu = [
+    mount_submenu = [
+        MenuItem(mount_driver or "no driver configured"),
         MenuItem(_connect_label, action=_toggle_connect),
         MenuItem("Park",         action=lambda: None),
         MenuItem("Back"),
@@ -267,7 +271,7 @@ def _build_action_menu(
     m = Menu()
     m.add(MenuItem(_mode_label,   action=_toggle_mode))
     m.add(MenuItem(_pause_label,  action=_toggle_pause))
-    m.add(MenuItem("Telescope",   submenu=telescope_submenu))
+    m.add(MenuItem("Mount",       submenu=mount_submenu))
     m.add(MenuItem(_record_label, action=_toggle_record))
     m.add(MenuItem("Save",        action=on_save))
     m.add(MenuItem("Quit",        action=on_quit))
@@ -315,6 +319,7 @@ def _build_context_menu(
     mount_connected: bool,
     in_sky_map: bool = False,
     on_exit_sky_map=None,
+    cam_select_items: list | None = None,
 ) -> Menu:
     m = Menu()
     if near_object:
@@ -325,10 +330,11 @@ def _build_context_menu(
         m.add(MenuItem("Slew here", action=on_slew))
     if near_object:
         m.add(MenuItem("Sync here", action=on_sync if mount_connected else None))
+    if not in_sky_map and cam_select_items is not None:
+        submenu = list(cam_select_items)
+        m.add(MenuItem("Cam Select", submenu=submenu))
     if in_sky_map:
         m.add(MenuItem("Exit SkyMap", action=on_exit_sky_map))
-    elif mount_connected:
-        m.add(MenuItem("SkyMap", action=on_sky_map))
     return m
 
 
@@ -922,12 +928,6 @@ def _render_qr_overlay(
                           qy + qs + padding + line1.get_height() + 4))
 
 
-def _apply_brightness(image: np.ndarray, brightness: float) -> np.ndarray:
-    if brightness == 1.0:
-        return image
-    return np.clip(image.astype(np.float32) * brightness, 0, 255).astype(np.uint8)
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -935,6 +935,8 @@ def _apply_brightness(image: np.ndarray, brightness: float) -> np.ndarray:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", metavar="PATH", default=None,
+                   help="Path to configuration.yaml (overrides default search)")
     p.add_argument("--exposure", type=float, default=None,
                    help="Override streaming start exposure in seconds")
     p.add_argument("--vcam", metavar="SUBFOLDER",
@@ -944,11 +946,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--vmount", action="store_true",
                    help="Use a virtual mount for testing (no hardware required). "
                         "Connect via Action > Telescope > Connect.")
-    p.add_argument("--fullscreen", action="store_true",
-                   help="Run fullscreen at the native display resolution (default on Pi).")
+    p.add_argument("--windowed", action="store_true",
+                   help="Run in a window instead of fullscreen.")
     p.add_argument("--window-size", metavar="WxH", default=None,
-                   help="Windowed size override, e.g. 1280x720. "
-                        "Defaults to the display's current resolution.")
+                   help="Windowed size override, e.g. 1280x720. Implies --windowed.")
     return p.parse_args()
 
 
@@ -960,7 +961,7 @@ def main() -> None:
     args = _parse_args()
 
     try:
-        config = load()
+        config = load(config_path=args.config, data_root=_DATA_ROOT)
     except FileNotFoundError as exc:
         logging.warning("%s — using defaults", exc)
         config = None
@@ -994,12 +995,11 @@ def main() -> None:
         if not cameras:
             logging.warning("No ZWO ASI cameras found.")
             sys.exit(1)
-        preferred_id = config.preferred_camera_id if config else None
-        usb_index = cameras[0]["usb_index"]
-        for c in cameras:
-            if c.get("camera_id") == preferred_id:
-                usb_index = c["usb_index"]
-                break
+        # Pick the first connected camera in YAML order; fall back to USB order.
+        connected_ids = {c.get("camera_id", 0): c["usb_index"] for c in cameras}
+        yaml_ids = config.camera_ids() if config else []
+        start_id = next((cid for cid in yaml_ids if cid in connected_ids), None)
+        usb_index = connected_ids.get(start_id, cameras[0]["usb_index"])
         cam_ctx = ZwoAsiCamera(index=usb_index)
 
     catalog      = load_catalog(str(_CATALOG_PATH))
@@ -1018,15 +1018,15 @@ def main() -> None:
     screen_w = info.current_w if info.current_w > 0 else WINDOW_W
     screen_h = info.current_h if info.current_h > 0 else WINDOW_H
 
+    windowed = args.windowed or bool(args.window_size)
+
     if args.window_size:
         try:
             win_w, win_h = (int(v) for v in args.window_size.lower().split("x"))
         except ValueError:
             logging.error("--window-size must be WxH, e.g. 1280x720")
             sys.exit(1)
-    elif args.fullscreen:
-        win_w, win_h = screen_w, screen_h
-    else:
+    elif windowed:
         # In windowed mode the OS menu bar / notch / dock eat into the available
         # height.  Reserve a platform-appropriate margin so the window fits.
         if sys.platform == "darwin":
@@ -1034,15 +1034,17 @@ def main() -> None:
         elif sys.platform == "win32":
             margin_h = 48   # taskbar
         else:
-            margin_h = 0
+            margin_h = 40   # Pi / Linux desktop taskbar (~36 px)
         win_w = min(WINDOW_W, screen_w)
         win_h = min(WINDOW_H, screen_h - margin_h)
+    else:
+        win_w, win_h = screen_w, screen_h
 
-    if args.fullscreen:
+    if windowed:
+        screen = pygame.display.set_mode((win_w, win_h))
+    else:
         screen = pygame.display.set_mode((win_w, win_h),
                                          pygame.FULLSCREEN | pygame.NOFRAME)
-    else:
-        screen = pygame.display.set_mode((win_w, win_h))
 
     pygame.display.set_caption(WINDOW_TITLE)
     pygame.mouse.set_visible(True)
@@ -1079,7 +1081,7 @@ def main() -> None:
             state.mount_connected = True
             state.mount_tracking  = True   # VirtualMount always tracks
             return
-        driver = cam_config_ref[0].mount_driver
+        driver = config.mount_driver if config else ""
         if not driver:
             return
         try:
@@ -1122,7 +1124,6 @@ def main() -> None:
             if cam_config.data_offset is not None:
                 cam.offset = cam_config.data_offset
             if cam_config.pattern is not None:
-                from dataclasses import replace as _dc_replace
                 cam._info = _dc_replace(cam.info, bayer_pattern=cam_config.pattern)
             cam.meta.telescope_description = cam_config.telescope_description
             cam.meta.focal_length_mm       = cam_config.focal_length_mm
@@ -1136,6 +1137,66 @@ def main() -> None:
             fov_ref[0] = compute_hfov(
                 cam_config.focal_length_mm, cam.info.pixel_size_um, roi_w,
             ) or fov_ref[0]
+
+        # -- open all other configured cameras so we can switch between them ----
+        cam_pool: dict[int, ZwoAsiCamera | VirtualCamera] = {cam.info.camera_id: cam}
+        _extra_cams: list[ZwoAsiCamera] = []
+        if not args.vcam:
+            for _uc in cameras:
+                _eid = _uc.get("camera_id", 0)
+                if _eid not in cam_pool:
+                    _ec = ZwoAsiCamera(index=_uc["usb_index"])
+                    try:
+                        _ec.connect()
+                        cam_pool[_eid] = _ec
+                        _extra_cams.append(_ec)
+                        logging.info("Opened secondary camera ID %d", _eid)
+                    except Exception as _ex:
+                        logging.warning("Could not open camera ID %d: %s", _eid, _ex)
+
+        def _apply_cam_config(target_cam, cfg: CameraConfig) -> None:
+            """Apply CameraConfig settings to a camera object."""
+            if cfg.gain is not None:
+                target_cam.gain = cfg.gain
+            if cfg.data_offset is not None:
+                target_cam.offset = cfg.data_offset
+            if cfg.pattern is not None:
+                target_cam._info = _dc_replace(target_cam.info, bayer_pattern=cfg.pattern)
+            target_cam.meta.telescope_description = cfg.telescope_description
+            target_cam.meta.focal_length_mm       = cfg.focal_length_mm
+            target_cam.meta.Lat = lat
+            target_cam.meta.Lon = lon
+
+        def _switch_cam_config(name: str, camera_id: int) -> None:
+            """Switch to a named config; if it belongs to a different physical camera, swap hardware."""
+            if config is None:
+                return
+            new_cfg = config.get_config(camera_id, name)
+            new_cam = cam_pool.get(camera_id)
+
+            if new_cam is not None and new_cam is not grabber.cam:
+                grabber.reset()
+                if isinstance(new_cam, ZwoAsiCamera):
+                    _apply_cam_config(new_cam, new_cfg)
+                    if new_cfg.cam_size[0] > 0 or new_cfg.cam_size[1] > 0:
+                        rx, ry, rw, rh = new_cfg.effective_roi(
+                            new_cam.info.sensor_width_px, new_cam.info.sensor_height_px)
+                        new_cam.set_roi(x=rx, y=ry, width=rw, height=rh)
+                grabber.cam     = new_cam
+                grabber.imDark  = 0
+                grabber.imFlat  = 0
+                grabber.imDPC   = 0
+                grabber.pattern = new_cfg.pattern or None
+
+            cam_config_ref[0] = new_cfg
+            roi_x, roi_y, roi_w, roi_h = new_cfg.effective_roi(
+                grabber.cam.info.sensor_width_px, grabber.cam.info.sensor_height_px)
+            fov_ref[0] = compute_hfov(
+                new_cfg.focal_length_mm, grabber.cam.info.pixel_size_um, roi_w
+            ) or fov_ref[0]
+            stacker.reset()
+            state.paused = False
+            _close_menu()
 
         grabber = FrameGrabber(cam)
         grabber.pattern = cam.info.bayer_pattern
@@ -1203,6 +1264,8 @@ def main() -> None:
             recorder      = recorder,
             on_save       = _on_save,
             on_quit       = _on_quit,
+            mount_driver  = ("Virtual mount" if args.vmount
+                             else config.mount_driver if config else ""),
         )
 
         def _on_moon_mode() -> None:
@@ -1227,7 +1290,7 @@ def main() -> None:
             sky_map_fov_max = config.sky_map.fov_max  if config else 60.0,
         )
 
-        actual_gain = cam.gain
+        actual_gain = grabber.cam.gain
         ae        = StreamExposure(start=args.exposure if args.exposure is not None else 0.1)
         stacker = ConstellationStacker()
         stack_seq = ExposureSequence(STACKING_SEQUENCE)
@@ -1291,19 +1354,19 @@ def main() -> None:
 
         def _enter_focus_active() -> None:
             nonlocal _focus_roi_saved, _focus_hardware_roi
-            if not isinstance(cam, ZwoAsiCamera):
+            if not isinstance(grabber.cam, ZwoAsiCamera):
                 return
             _stop_and_reset_grab()
-            saved = cam.get_roi()
+            saved = grabber.cam.get_roi()
             _focus_roi_saved = saved
             roi_x, roi_y, roi_w, roi_h = saved
             sensor_cx = roi_x + int(state.focus_center_x * roi_w)
             sensor_cy = roi_y + int(state.focus_center_y * roi_h)
-            sensor_w  = cam.info.sensor_width_px
-            sensor_h  = cam.info.sensor_height_px
+            sensor_w  = grabber.cam.info.sensor_width_px
+            sensor_h  = grabber.cam.info.sensor_height_px
             fx = max(0, min(sensor_w - FOCUS_ROI_HALF * 2, (sensor_cx - FOCUS_ROI_HALF) & ~1))
             fy = max(0, min(sensor_h - FOCUS_ROI_HALF * 2, (sensor_cy - FOCUS_ROI_HALF) & ~1))
-            cam.set_roi(x=fx, y=fy, width=FOCUS_ROI_HALF * 2, height=FOCUS_ROI_HALF * 2)
+            grabber.cam.set_roi(x=fx, y=fy, width=FOCUS_ROI_HALF * 2, height=FOCUS_ROI_HALF * 2)
             _focus_hardware_roi = True
             _restart_grab()
 
@@ -1321,10 +1384,10 @@ def main() -> None:
 
         def _exit_focus() -> None:
             nonlocal _focus_roi_saved, _focus_hardware_roi
-            if _focus_hardware_roi and _focus_roi_saved is not None and isinstance(cam, ZwoAsiCamera):
+            if _focus_hardware_roi and _focus_roi_saved is not None and isinstance(grabber.cam, ZwoAsiCamera):
                 _stop_and_reset_grab()
                 x, y, w, h = _focus_roi_saved
-                cam.set_roi(x=x, y=y, width=w, height=h)
+                grabber.cam.set_roi(x=x, y=y, width=w, height=h)
                 _focus_hardware_roi = False
                 _focus_roi_saved    = None
                 _restart_grab()
@@ -1428,8 +1491,12 @@ def main() -> None:
                                                    layout)
                                 if idx is not None:
                                     ctx.set_selection(idx)
-                                    ctx.select()
-                            _close_menu()
+                                    if ctx.select():
+                                        _close_menu()
+                                else:
+                                    _close_menu()   # clicked outside menu
+                            else:
+                                _close_menu()
 
                         else:
                             # No menu open — check icon hits, then toggle
@@ -1548,6 +1615,20 @@ def main() -> None:
                                 state.sky_map_cam_fov_v = None
                                 _close_menu()
 
+                            _all_configs: list[tuple[str, int]] = []
+                            if config:
+                                for _cid in config.camera_ids():
+                                    if _cid in cam_pool:
+                                        for _n in config.config_names(_cid):
+                                            _all_configs.append((_n, _cid))
+                            _cam_sel_items: list[MenuItem] = [
+                                MenuItem(n, action=lambda n=n, cid=cid: _switch_cam_config(n, cid))
+                                for n, cid in _all_configs
+                            ]
+                            if state.mount_connected:
+                                _cam_sel_items.append(
+                                    MenuItem("SkyMap", action=_enter_sky_map))
+
                             if state.all_sky_mode:
                                 context_menu_ref[0] = _build_context_menu(
                                     near_object     = near is not None,
@@ -1562,13 +1643,14 @@ def main() -> None:
                                 )
                             else:
                                 context_menu_ref[0] = _build_context_menu(
-                                    near_object     = near is not None,
-                                    object_name     = near["name"] if near else "",
-                                    on_focus        = lambda: _focus_here(*_screen_to_sensor_norm(mx, my, img_rect, state)),
-                                    on_slew         = _do_slew,
-                                    on_sync         = _do_sync,
-                                    on_sky_map      = _enter_sky_map,
-                                    mount_connected = state.mount_connected,
+                                    near_object       = near is not None,
+                                    object_name       = near["name"] if near else "",
+                                    on_focus          = lambda: _focus_here(*_screen_to_sensor_norm(mx, my, img_rect, state)),
+                                    on_slew           = _do_slew,
+                                    on_sync           = _do_sync,
+                                    on_sky_map        = _enter_sky_map,
+                                    mount_connected   = state.mount_connected,
+                                    cam_select_items  = _cam_sel_items,
                                 )
                             state.context_menu_pos = event.pos
                             _open_menu("context")
@@ -1653,8 +1735,7 @@ def main() -> None:
 
                     elif state.mode == ViewMode.LIVE:
                         ae.update(fdata)
-                        data8 = stretch_to_uint8(fdata)
-                        data8 = _apply_brightness(data8, state.brightness)
+                        data8 = stretch_to_uint8(fdata, brightness=state.brightness)
                         last_surface = pygame.transform.smoothscale(
                             to_surface(data8), (img_rect.width, img_rect.height))
 
@@ -1670,12 +1751,12 @@ def main() -> None:
                     if state.stack_exposure is None and accepted:
                         stack_seq.advance()
 
-            # Reprocess the stack only when a new frame was added, not every
-            # render iteration — get_display_frame() is expensive on large images.
             if state.mode == ViewMode.ACCUMULATE and _stack_dirty and not state.active_menu:
-                display8 = stacker.get_display_frame(sky_sub_scale=state.sky_subtraction)
+                stacker.process_stack(sky_sub_scale=state.sky_subtraction)
+
+            if state.mode == ViewMode.ACCUMULATE and not state.active_menu:
+                display8 = stacker.get_display_frame(brightness=state.brightness)
                 if display8 is not None:
-                    display8     = _apply_brightness(display8, state.brightness)
                     last_surface = pygame.transform.smoothscale(
                         to_surface(display8), (img_rect.width, img_rect.height))
 
@@ -1831,27 +1912,27 @@ def main() -> None:
             # Status bars (drawn last so they sit on top)
             if state.focus_state == FocusState.ACTIVE:
                 hud_top = (
-                    f"FOCUS  exp={ae.current:.4g}s  gain={actual_gain}  "
-                    f"fps={fps_display:.1f}  — click or any key to exit"
+                    f"FOCUS  exp={ae.current:.4g}s  fps={fps_display:.1f}"
+                    f"  — click or any key to exit"
                 )
                 hud_bot = ""
             elif state.mode == ViewMode.ACCUMULATE:
                 hud_top = (
-                    f"STACK  exp={stack_seq.current:.4g}s  gain={actual_gain}"
+                    f"STACK  exp={stack_seq.current:.4g}s  t={stacker.t_accum:.1f}s"
                 )
                 hud_bot = (
-                    f"frames={stacker.frame_count}  skip={stacker.skipped_count}  "
-                    f"t={stacker.t_accum:.1f}s  "
-                    f"{cam_config_ref[0].telescope_description}"
+                    f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  "
+                    f"{cam_config_ref[0].telescope_description}  "
+                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
                 )
             else:
                 hud_top = (
-                    f"LIVE  exp={ae.current:.4g}s  gain={actual_gain}  "
-                    f"fps={fps_display:.1f}"
+                    f"LIVE  exp={ae.current:.4g}s  fps={fps_display:.1f}"
                 )
                 hud_bot = (
-                    f"frames={frame_count}  "
-                    f"{cam_config_ref[0].telescope_description}"
+                    f"frames={frame_count}  skipped=0  "
+                    f"{cam_config_ref[0].telescope_description}  "
+                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
                 )
 
             _render_status_bars(
@@ -1875,6 +1956,12 @@ def main() -> None:
 
         _stop_grab.set()
         _grab_thread.join(timeout=5.0)
+
+        for _ec in _extra_cams:
+            try:
+                _ec.disconnect()
+            except Exception:
+                pass
 
     pygame.quit()
 

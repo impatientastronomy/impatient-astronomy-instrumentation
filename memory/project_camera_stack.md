@@ -41,3 +41,12 @@ The ZWO SDK resets the exposure control when binning is changed. Always set binn
 - Binning set before exposure time (SDK ordering requirement above)
 - `grabber.pattern` set from `cam.info.bayer_pattern` (populated by camera config)
 - `demosaic=grabber.pattern is not None` — auto-enables for color cameras
+
+## Multi-camera support (digital_eyepiece/main.py)
+Mirrors the MATLAB LiveViewer: all connected cameras are opened at startup into `cam_pool: dict[int, Camera]`.
+The preferred/primary camera is opened via the `with cam_ctx as cam:` context manager; additional cameras
+are opened with explicit `.connect()` and stored as `_extra_cams` for cleanup on exit.
+Camera switching: `_switch_cam_config(name, camera_id)` calls `grabber.reset()`, runs `_apply_cam_config()`
+on the target camera (gain/offset/pattern/ROI/meta), then swaps `grabber.cam`, clears cal cache, resets stacker.
+Runtime code that needs the active camera uses `grabber.cam` (not the outer `cam` variable).
+YAML camera name keys must be quoted strings (e.g. `"primary":`) so users can use names with spaces.

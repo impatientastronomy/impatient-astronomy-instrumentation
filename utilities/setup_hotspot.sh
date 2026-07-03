@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # setup_hotspot.sh — One-time Raspberry Pi hotspot configuration.
 #
-# Creates a WiFi access point on wlan1 (USB dongle) so guests can join
-# and access the AstroEye image gallery without needing the internet.
-# wlan0 remains free to connect to the mount's WiFi network.
+# Creates a WiFi access point on wlan-guest (USB dongle, pinned by udev rule)
+# so guests can join and access the AstroEye image gallery without needing
+# the internet.  wlan0 remains free for SSH/setup; wlan-mount connects to
+# the mount's WiFi network.
+# Run install.py first to set up the wlan-guest udev name rule.
 #
 # Run once as root:
 #   sudo bash utilities/setup_hotspot.sh
@@ -17,7 +19,7 @@ set -euo pipefail
 
 SSID="AstroEye"
 PASSWORD="stargazer"
-INTERFACE="wlan1"
+INTERFACE="wlan-guest"
 IP="192.168.10.1"
 DHCP_RANGE="192.168.10.10,192.168.10.50,12h"
 PORT=8080

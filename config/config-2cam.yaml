@@ -1,0 +1,81 @@
+# Digital Eyepiece — Two-camera configuration
+#
+# Camera 3: ASI183, Vixen 600mm, GBRG
+# Camera 7: ASI183, second telescope, RGGB
+
+latitude:  38.44
+longitude: -122.71
+
+filters:
+  0: none
+  1: luminance
+  2: UHC
+  3: Ha
+  4: SII
+  5: OIII
+
+max_zoom: 5
+
+# ---------------------------------------------------------------------------
+# Mount  (shared across all cameras)
+# ---------------------------------------------------------------------------
+mount_driver: zwo_am5
+mount_type: Alt-Az
+
+cameras:
+  "primary":
+    # --- Camera hardware ---
+    id: 3
+    gain: 139
+    data_offset: 21
+    flip: 0
+    pattern: GBRG
+    bin: 1
+    cam_size: [3520, 3520]
+    cam_offset: [-1, -1]
+
+    # --- Telescope / optics ---
+    telescope_description: Vixen_600mm
+    focal_length_mm: 600
+
+    # --- Display alignment ---
+    image_offset:   [0, 0]
+    image_scale:    1
+    image_rotation: 0
+
+    # --- Overlay alignment ---
+    overlay_style:    style1
+    overlay_offset:   [0, 0]
+    overlay_scale:    1
+    overlay_rotation: 0
+    overlay_flip:     0
+
+  "secondary":
+    # --- Camera hardware ---
+    id: 7
+    gain: 100
+    data_offset: 10
+    flip: 0
+    pattern: RGGB
+    bin: 1
+    cam_size: [3008, 3008]
+    cam_offset: [-1, -1]
+
+    # --- Telescope / optics ---
+    telescope_description: second_telescope
+    focal_length_mm: 600  # update for your second telescope
+
+    # --- Display alignment ---
+    image_offset:   [0, 0]
+    image_scale:    1
+    image_rotation: 0
+
+    # --- Overlay alignment ---
+    overlay_style:    style1
+    overlay_offset:   [0, 0]
+    overlay_scale:    1
+    overlay_rotation: 0
+    overlay_flip:     0
+
+sky_map:
+  map_fov: [10, 20, 60]

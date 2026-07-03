@@ -37,7 +37,8 @@ from pathlib import Path
 
 import yaml
 
-_DEFAULT_CONFIG_PATH = Path(__file__).parents[2] / "configuration.yaml"
+_DEFAULT_CONFIG_PATH  = Path(__file__).parents[2] / "configuration.yaml"
+_EXAMPLE_CONFIG_PATH  = Path(__file__).parents[2] / "config" / "configuration-example.yaml"
 
 _FLIP_NAMES  = {0: "NONE", 1: "HORIZ", 2: "VERT", 3: "BOTH"}
 _VALID_PATTERNS = {"NONE", "RGGB", "BGGR", "GRBG", "GBRG"}
@@ -80,8 +81,6 @@ class CameraConfig:
     # Telescope / optics
     telescope_description: str   = ""
     focal_length_mm:       float = 0.0
-    mount_driver:          str   = ""      # python module name under astrocore.mount
-    mount_type:            str   = "Alt-Az"
     # Camera hardware
     gain:        int | None        = None
     data_offset: int | None        = None   # moves readout values above zero
@@ -152,22 +151,28 @@ def compute_hfov(
 class Configuration:
     """Parsed contents of configuration.yaml."""
 
-    def __init__(self, raw: dict, path: Path) -> None:
+    def __init__(self, raw: dict, path: Path, data_root: Path | None = None) -> None:
         self._path = path
-        self.latitude:            float      = float(raw.get("latitude",  0.0))
-        self.longitude:           float      = float(raw.get("longitude", 0.0))
-        self.preferred_camera_id: int | None = raw.get("preferred_camera_id")
-        self.max_zoom: float = float(raw.get("max_zoom", 5.0))
+        self.latitude:  float = float(raw.get("latitude",  0.0))
+        self.longitude: float = float(raw.get("longitude", 0.0))
+        self.max_zoom:  float = float(raw.get("max_zoom", 5.0))
 
         raw_cal = raw.get("cal_path")
-        self.cal_path: Path | None = Path(str(raw_cal)) if raw_cal else None
+        self.cal_path: Path | None = (
+            Path(str(raw_cal)).expanduser() if raw_cal
+            else (data_root / "cals" if data_root else None)
+        )
 
         raw_rec = raw.get("record_path")
-        self.record_path: Path | None = Path(str(raw_rec)) if raw_rec else None
+        self.record_path: Path | None = (
+            Path(str(raw_rec)).expanduser() if raw_rec
+            else (data_root / "sessions" if data_root else None)
+        )
 
         raw_img = raw.get("image_path")
         self.image_path: Path | None = (
-            Path(str(raw_img)).expanduser() if raw_img else None
+            Path(str(raw_img)).expanduser() if raw_img
+            else (data_root / "images" if data_root else None)
         )
 
         raw_hs = raw.get("hotspot") or {}
@@ -189,6 +194,9 @@ class Configuration:
             fov_default = float(fov_list[1]) if len(fov_list) > 1 else 20.0,
             fov_max     = float(fov_list[2]) if len(fov_list) > 2 else 60.0,
         )
+
+        self.mount_driver: str = str(raw.get("mount_driver", ""))
+        self.mount_type:   str = str(raw.get("mount_type",   "Alt-Az"))
 
         self._blocks: list[_CameraBlock] = _parse_cameras(raw.get("cameras") or {})
         self._validate()
@@ -295,8 +303,6 @@ def _parse_camera_config(raw: dict) -> CameraConfig:
     return CameraConfig(
         telescope_description = str(raw.get("telescope_description", "")),
         focal_length_mm       = float(raw.get("focal_length_mm", 0.0)),
-        mount_driver          = str(raw.get("mount_driver", "")),
-        mount_type            = str(raw.get("mount_type", "Alt-Az")),
         gain                  = raw.get("gain"),
         data_offset           = raw.get("data_offset", raw.get("offset")),  # new name, fallback to old
         pattern               = raw.get("pattern") or None,
@@ -344,25 +350,46 @@ def _parse_cameras(raw: object) -> list[_CameraBlock]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def load(config_path: str | Path | None = None) -> Configuration:
+def load(
+    config_path: str | Path | None = None,
+    data_root:   Path | None       = None,
+) -> Configuration:
     """
     Load and return the configuration.  Raises FileNotFoundError if not found.
 
     Search order:
       1. config_path argument
-      2. CAMERA_CONFIG environment variable
-      3. configuration.yaml at the repo root
+      2. DIGITAL_EYEPIECE_CONFIG environment variable
+      3. <data_root>/config/configuration.yaml  (when data_root is provided)
+      4. configuration.yaml at the repo root    (backward-compatibility fallback)
     """
-    path = Path(
-        config_path
-        or os.environ.get("CAMERA_CONFIG", "")
-        or _DEFAULT_CONFIG_PATH
-    )
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Configuration not found at {path}. "
-            "Create configuration.yaml or set CAMERA_CONFIG."
+    if config_path:
+        candidates = [Path(config_path).expanduser()]
+    elif env := (os.environ.get("DIGITAL_EYEPIECE_CONFIG")
+                 or os.environ.get("CAMERA_CONFIG")):
+        candidates = [Path(env).expanduser()]
+    elif data_root is not None:
+        candidates = [
+            data_root / "config" / "configuration.yaml",
+            _DEFAULT_CONFIG_PATH,
+        ]
+    else:
+        candidates = [_DEFAULT_CONFIG_PATH]
+
+    path = next((p for p in candidates if p.exists()), None)
+
+    if path is None:
+        hint = (
+            data_root / "config" / "configuration.yaml"
+            if data_root else candidates[0]
         )
+        raise FileNotFoundError(
+            f"No configuration file found.\n"
+            f"Run 'bash utilities/install.sh' to set up your data directory,\n"
+            f"then edit {hint}.\n"
+            f"See {_EXAMPLE_CONFIG_PATH} for a fully commented example."
+        )
+
     with path.open(encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    return Configuration(raw, path)
+    return Configuration(raw, path, data_root=data_root)

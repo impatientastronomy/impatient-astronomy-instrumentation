@@ -12,19 +12,21 @@ def stretch_to_uint8(
     image: np.ndarray,
     lo_pct: float = 0.5,
     hi_pct: float = 99.5,
+    brightness: float = 1.0,
 ) -> np.ndarray:
     """
     Percentile stretch a uint16 image to uint8 for display.
 
     Works on 2-D (mono) or 3-D (H×W×C) arrays.  The percentiles are computed
     over all pixels so colour channels are scaled consistently.
+    brightness is applied at float32 precision before quantising to uint8.
     """
     lo = float(np.percentile(image, lo_pct))
     hi = float(np.percentile(image, hi_pct))
     if hi <= lo:
         hi = lo + 1.0
     clipped = np.clip(image.astype(np.float32), lo, hi)
-    scaled = (clipped - lo) / (hi - lo) * 255.0
+    scaled = np.clip((clipped - lo) / (hi - lo) * 255.0 * brightness, 0.0, 255.0)
     return scaled.astype(np.uint8)
 
 

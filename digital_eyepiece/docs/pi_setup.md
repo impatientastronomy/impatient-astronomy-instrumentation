@@ -122,7 +122,7 @@ udev rule, and the display timing settings.  The script works on Mac, Windows, a
 Raspberry Pi without modification.
 
 ```bash
-python3 utilities/install.py
+uv run python utilities/install.py
 ```
 
 On Mac and Raspberry Pi you can also use the bash shortcut:
@@ -133,8 +133,9 @@ bash utilities/install.sh
 
 The script:
 - Installs all Python packages via `uv sync`
-- Creates `~/digital_eyepiece/{config,cals,sessions,images}/`
-- Copies `config/configuration-example.yaml` to `~/digital_eyepiece/config/configuration.yaml`
+- Creates `~/digital_eyepiece/{cals,sessions,images}/`
+- Copies `digital_eyepiece/config/configuration-example.yaml` to
+  `digital_eyepiece/config/configuration.yaml` (in the repo, already gitignored)
   if no configuration file exists there yet
 - On macOS: fixes a libSDL2 conflict between opencv and pygame
 - On Raspberry Pi: copies the ZWO ASI udev rule to `/etc/udev/rules.d/` (requires sudo)
@@ -193,16 +194,16 @@ nmcli connection up mount-wifi
 
 ## 7. Edit the configuration file
 
-The install script created your personal configuration file at:
+The install script created your personal configuration file inside the repository at:
 
 ```
-~/digital_eyepiece/config/configuration.yaml
+digital_eyepiece/config/configuration.yaml
 ```
 
 Open it in a text editor:
 
 ```bash
-nano ~/digital_eyepiece/config/configuration.yaml
+nano ~/impatient-astronomy-instrumentation/digital_eyepiece/config/configuration.yaml
 ```
 
 Key fields to set:
@@ -232,6 +233,19 @@ This prints each connected camera's model and ID.
 **Calibration data** is optional.  If `~/digital_eyepiece/cals/` is empty the software
 starts without dark or flat correction and prints a warning.  You can add calibration
 data later.
+
+**Transferring files from your Mac/PC:**  If you already have a working setup on
+another computer, run these commands from that computer to copy files to the Pi:
+
+```bash
+# Copy your configuration file (run from the repo root on your Mac/PC)
+scp digital_eyepiece/config/configuration.yaml pi@astro-eye.local:~/impatient-astronomy-instrumentation/digital_eyepiece/config/
+
+# Copy your calibration files
+scp -r ~/digital_eyepiece/cals/ pi@astro-eye.local:~/digital_eyepiece/
+```
+
+Replace `pi@astro-eye.local` with your Pi's username and hostname if different.
 
 ---
 
@@ -317,7 +331,7 @@ This installs `hostapd` and `dnsmasq`, configures the `wlan-guest` interface wit
 static IP, and enables the captive portal redirect.  See the script header for
 customisation options.
 
-Edit the `hotspot:` section in `~/digital_eyepiece/config/configuration.yaml` if you
+Edit the `hotspot:` section in `digital_eyepiece/config/configuration.yaml` if you
 changed the SSID, password, or IP address in the script.
 
 After setup and a reboot, the hotspot starts automatically.  To print the QR code for
@@ -391,4 +405,4 @@ enable VNC, then launch the software from the Pi's own desktop session.
 **Calibration data warnings at startup**
 These are non-fatal.  The software runs without calibration; dark and flat correction is
 simply skipped.  Add calibration data to `~/digital_eyepiece/cals/` when you have it;
-see `config/configuration-example.yaml` for the expected folder layout.
+see `digital_eyepiece/config/configuration-example.yaml` for the expected folder layout.

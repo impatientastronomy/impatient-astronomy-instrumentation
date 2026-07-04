@@ -1,0 +1,108 @@
+# Digital Eyepiece — Configuration Example
+#
+# Copy this file to digital_eyepiece/config/configuration.yaml (same folder,
+# already gitignored) and edit it for your setup.
+# The install script (uv run python utilities/install.py) does this for you.
+#
+# You only need to change the fields that differ from the defaults shown here.
+# Fields marked "required" must be set for the software to work correctly.
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+# By default all data lives under ~/digital_eyepiece/ — no path configuration
+# is needed.  Uncomment and edit any line below to override an individual path.
+#
+#cal_path:    "~/digital_eyepiece/cals"      # darks, flats, DPC masks
+#record_path: "~/digital_eyepiece/sessions"  # recorded session folders; also used by --vcam
+#image_path:  "~/digital_eyepiece/images"    # saved JPEG eyepiece images
+
+# ---------------------------------------------------------------------------
+# Observer location
+# ---------------------------------------------------------------------------
+# Used as fallback when the mount cannot report its GPS position.
+latitude:  38.44    # decimal degrees, positive = north
+longitude: -122.71  # decimal degrees, positive = east
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+# Filter number is encoded in filenames and camera metadata.
+# The first entry is used as the default filter.
+filters:
+  0: none
+  1: luminance
+  2: UHC
+  3: Ha
+  4: SII
+  5: OIII
+
+# ---------------------------------------------------------------------------
+# Cameras  (required)
+# ---------------------------------------------------------------------------
+# Each entry under cameras: is a named configuration for one camera + telescope
+# combination.  You can have multiple entries — the software selects by camera ID.
+#
+# Finding your camera ID:
+#   uv run python -c "from astrocore.camera.zwo_asi import list_cameras; print(list_cameras())"
+
+max_zoom: 5  # maximum digital zoom factor (scroll-wheel)
+
+# ---------------------------------------------------------------------------
+# Mount  (shared across all cameras)
+# ---------------------------------------------------------------------------
+mount_driver: zwo_am5  # Python module name under astrocore.mount  (required)
+mount_type: Alt-Az     # Alt-Az or Equatorial
+
+cameras:
+  "primary":
+    # --- Camera hardware ---
+    id: 3                   # camera ID stored in EEPROM  (required)
+    gain: 139               # sensor gain
+    data_offset: 21         # moves readout values above zero to avoid clipping
+    flip: 0                 # 0=NONE  1=HORIZ  2=VERT  3=BOTH
+    pattern: GBRG           # Bayer pattern: NONE, RGGB, BGGR, GBRG, or GBRG  (required)
+    bin: 1                  # binning factor
+    cam_size: [3520, 3520]  # [width, height] of readout; use [-1, -1] for full sensor
+    cam_offset: [-1, -1]    # [x, y] ROI start (zero-indexed); -1 = auto-centre
+
+    # --- Telescope / optics ---
+    telescope_description: Vixen_600mm  # short label used in saved file metadata
+    focal_length_mm: 600  # tweak this if the sky overlay does not align correctly
+
+    # --- Display alignment ---
+    image_offset:   [0, 0]  # [x, y] display pixels — shifts the image
+    image_scale:    1       # >1 zooms into image; <1 adds black border
+    image_rotation: 0       # large rotations are better handled with flip
+
+    # --- Overlay alignment ---
+    overlay_style:    style1  # see overlay_style.yaml for available styles
+    overlay_offset:   [0, 0]  # [x, y] display pixels — shifts the overlay
+    overlay_scale:    1       # typically 1; if not 1, focal_length_mm is wrong
+    overlay_rotation: 0
+    overlay_flip:     0       # 0=NONE  1=HORIZ  2=VERT  3=BOTH
+
+  # To add a second camera, copy the block above and paste here with a quoted name, e.g.:
+  # "secondary":
+  #   id: 7
+  #   ...
+
+# ---------------------------------------------------------------------------
+# Sky map
+# ---------------------------------------------------------------------------
+sky_map:
+  map_fov: [10, 20, 60]  # [min, default, max] horizontal field of view in degrees
+
+# ---------------------------------------------------------------------------
+# Guest image-sharing hotspot  (optional)
+# ---------------------------------------------------------------------------
+# Run utilities/setup_hotspot.sh once to configure the Pi's second WiFi
+# interface (wlan1) as an access point.  Guests scan the QR code to view
+# saved images on their phones.
+#
+# hotspot:
+#   ssid:      AstroEye
+#   password:  stargazer
+#   interface: wlan-guest
+#   ip:        192.168.10.1
+#   port:      8080

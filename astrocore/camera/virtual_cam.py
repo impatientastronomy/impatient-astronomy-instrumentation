@@ -36,6 +36,7 @@ from .base import (
     Camera,
     CameraInfo,
     ConnectionError,
+    ExposureError,
     ExposureStatus,
     Frame,
     FrameMeta,
@@ -205,7 +206,7 @@ class VirtualCamera(Camera):
 
     # -- internals ----------------------------------------------------------
 
-    def _build_meta(self, row: dict, saved: dict | None = None) -> FrameMeta:
+    def _build_meta(self, row: dict, saved: dict | None = None) -> FrameMeta:  # noqa: E301
         saved = saved or {}
         temp = row.get("temperature_c")
         if temp is None or (isinstance(temp, float) and math.isnan(temp)):
@@ -234,3 +235,48 @@ class VirtualCamera(Camera):
             roi_width=saved.get("roi_width"),
             roi_height=saved.get("roi_height"),
         )
+
+
+class NullCamera(Camera):
+    """
+    Stand-in camera used when no hardware is detected at startup.
+
+    Never produces frames — the grab thread is not started when this camera
+    is active.  Allows the app to run so the user can interact with the
+    mount and SkyMap without a camera connected.
+    """
+
+    gain:   int = 0
+    offset: int = 0
+    bin:    int = 1
+
+    def connect(self) -> None:
+        self._connected = True
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+    @property
+    def info(self) -> CameraInfo:
+        return CameraInfo(
+            model="No camera",
+            usb_index=0,
+            sensor_width_px=1280,
+            sensor_height_px=720,
+            pixel_size_um=0.0,
+            bit_depth=16,
+            camera_id=0,
+        )
+
+    def start_exposure(self, is_dark: bool = False) -> None:
+        pass
+
+    @property
+    def exposure_status(self) -> ExposureStatus:
+        return ExposureStatus.IDLE
+
+    def read_frame(self) -> Frame:
+        raise ExposureError("NullCamera has no frames")
+
+    def abort(self) -> None:
+        pass

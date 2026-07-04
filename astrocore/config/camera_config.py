@@ -7,25 +7,23 @@ per-camera telescope/optics/display settings.
 
 Cameras section format
 -----------------------
-Each entry under ``cameras:`` is keyed by a descriptive name.  Multiple
-entries may share the same ``id`` (different telescope configs for the same
-physical camera)::
+Each entry under ``cameras:`` is a quoted name mapping to a dict that
+contains ``id`` and the camera/telescope settings.  Multiple entries may
+share the same ``id`` (different telescope configs for the same physical
+camera)::
 
     cameras:
-      primary:
+      "primary":
         id: 3
         telescope_description: Vixen_600mm
         ...
-      sct_config:
+      "sct_config":
         id: 3
         telescope_description: SCT_2000mm
         ...
-      second_camera:
+      "second_camera":
         id: 7
         ...
-
-The old single-block format (``cameras: {id: 3, config_1: {...}, ...}``) is
-still accepted for backward compatibility.
 """
 
 from __future__ import annotations
@@ -37,8 +35,7 @@ from pathlib import Path
 
 import yaml
 
-_DEFAULT_CONFIG_PATH  = Path(__file__).parents[2] / "configuration.yaml"
-_EXAMPLE_CONFIG_PATH  = Path(__file__).parents[2] / "config" / "configuration-example.yaml"
+_EXAMPLE_CONFIG_PATH  = Path(__file__).parents[2] / "digital_eyepiece" / "config" / "configuration-example.yaml"
 
 _FLIP_NAMES  = {0: "NONE", 1: "HORIZ", 2: "VERT", 3: "BOTH"}
 _VALID_PATTERNS = {"NONE", "RGGB", "BGGR", "GRBG", "GBRG"}
@@ -325,17 +322,6 @@ def _parse_cameras(raw: object) -> list[_CameraBlock]:
     if not isinstance(raw, dict):
         return []
 
-    # Old format: 'id' key at the cameras level, config_N sub-dicts alongside it.
-    if "id" in raw:
-        cam_id  = int(raw.get("id", 0))
-        configs = {
-            k: (v or {})
-            for k, v in raw.items()
-            if k not in ("id", "ID") and isinstance(v, dict)
-        }
-        return [_CameraBlock(cam_id, configs)]
-
-    # New format: each key is a camera name; the value dict contains 'id'.
     by_id: dict[int, dict[str, dict]] = {}
     for name, cam_raw in raw.items():
         if not isinstance(cam_raw, dict):
@@ -361,7 +347,6 @@ def load(
       1. config_path argument
       2. DIGITAL_EYEPIECE_CONFIG environment variable
       3. <data_root>/config/configuration.yaml  (when data_root is provided)
-      4. configuration.yaml at the repo root    (backward-compatibility fallback)
     """
     if config_path:
         candidates = [Path(config_path).expanduser()]
@@ -369,23 +354,17 @@ def load(
                  or os.environ.get("CAMERA_CONFIG")):
         candidates = [Path(env).expanduser()]
     elif data_root is not None:
-        candidates = [
-            data_root / "config" / "configuration.yaml",
-            _DEFAULT_CONFIG_PATH,
-        ]
+        candidates = [data_root / "config" / "configuration.yaml"]
     else:
-        candidates = [_DEFAULT_CONFIG_PATH]
+        candidates = []
 
     path = next((p for p in candidates if p.exists()), None)
 
     if path is None:
-        hint = (
-            data_root / "config" / "configuration.yaml"
-            if data_root else candidates[0]
-        )
+        hint = Path("digital_eyepiece/config/configuration.yaml")
         raise FileNotFoundError(
             f"No configuration file found.\n"
-            f"Run 'bash utilities/install.sh' to set up your data directory,\n"
+            f"Run 'uv run python utilities/install.py' to set up your data directory,\n"
             f"then edit {hint}.\n"
             f"See {_EXAMPLE_CONFIG_PATH} for a fully commented example."
         )

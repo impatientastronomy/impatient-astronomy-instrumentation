@@ -36,9 +36,11 @@ import argparse
 import importlib
 import logging
 import queue
+import socket
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
@@ -53,7 +55,7 @@ import cv2
 
 from astrocore.camera.catalog import scan_folder
 from astrocore.camera.frame_grabber import FrameGrabber, GrabStatus
-from astrocore.camera.virtual_cam import VirtualCamera
+from astrocore.camera.virtual_cam import NullCamera, VirtualCamera
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import CameraConfig, Configuration, HotspotConfig, compute_hfov, load
 from digital_eyepiece.gallery_server import GalleryServer
@@ -71,7 +73,8 @@ from digital_eyepiece.input.menu import Menu, MenuItem
 from digital_eyepiece.recorder import Recorder
 from digital_eyepiece.view_state import FocusState, ViewMode, ViewState
 
-_DATA_ROOT               = Path.home() / Path(__file__).parent.name   # ~/digital_eyepiece
+_DATA_ROOT               = Path.home() / Path(__file__).parent.name   # ~/digital_eyepiece (cals/sessions/images)
+_DEFAULT_CONFIG          = Path(__file__).parent / "config" / "configuration.yaml"  # repo-local, gitignored
 _CATALOG_PATH            = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "skychart.csv"
 _MOON_CATALOG_PATH       = Path(__file__).resolve().parent.parent / "astrocore" / "mount" / "moon_features.csv"
 _OVERLAY_STYLE_PATH      = Path(__file__).resolve().parent.parent / "overlay_style.yaml"
@@ -895,7 +898,8 @@ def _render_qr_overlay(
     surface: pygame.Surface,
     qr_surf: pygame.Surface,
     layout: dict,
-    hotspot: HotspotConfig,
+    line1_text: str,
+    line2_text: str,
     timer: float,
     total: float,
 ) -> None:
@@ -905,17 +909,18 @@ def _render_qr_overlay(
     padding = 12
 
     f = _font(11)
-    line1 = f.render(f"Join WiFi: {hotspot.ssid}  •  pw: {hotspot.password}", True, WHITE)
-    line2 = f.render("Then open your browser — gallery loads automatically", True, GREY)
+    line1 = f.render(line1_text, True, WHITE)
+    line2 = f.render(line2_text, True, GREY) if line2_text else None
 
     panel_w = max(qs + 2 * padding, line1.get_width() + 2 * padding)
-    panel_h = qs + line1.get_height() + line2.get_height() + 4 * padding
+    panel_h = (qs + line1.get_height() + 3 * padding
+               + ((line2.get_height() + padding) if line2 else 0))
 
     px = central.centerx - panel_w // 2
     py = central.centery - panel_h // 2
 
     # Fade out in the last second
-    alpha = int(220 * min(1.0, timer))
+    alpha = max(0, int(220 * min(1.0, timer)))
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((0, 0, 0, alpha))
     surface.blit(panel, (px, py))
@@ -924,8 +929,9 @@ def _render_qr_overlay(
     qy = py + padding
     surface.blit(qr_surf, (qx, qy))
     surface.blit(line1, (px + (panel_w - line1.get_width()) // 2, qy + qs + padding))
-    surface.blit(line2, (px + (panel_w - line2.get_width()) // 2,
-                          qy + qs + padding + line1.get_height() + 4))
+    if line2:
+        surface.blit(line2, (px + (panel_w - line2.get_width()) // 2,
+                              qy + qs + padding + line1.get_height() + 4))
 
 
 # ---------------------------------------------------------------------------
@@ -961,7 +967,8 @@ def main() -> None:
     args = _parse_args()
 
     try:
-        config = load(config_path=args.config, data_root=_DATA_ROOT)
+        _cfg_path = args.config or (_DEFAULT_CONFIG if _DEFAULT_CONFIG.exists() else None)
+        config = load(config_path=_cfg_path, data_root=_DATA_ROOT)
     except FileNotFoundError as exc:
         logging.warning("%s — using defaults", exc)
         config = None
@@ -993,14 +1000,15 @@ def main() -> None:
     else:
         cameras = list_cameras()
         if not cameras:
-            logging.warning("No ZWO ASI cameras found.")
-            sys.exit(1)
-        # Pick the first connected camera in YAML order; fall back to USB order.
-        connected_ids = {c.get("camera_id", 0): c["usb_index"] for c in cameras}
-        yaml_ids = config.camera_ids() if config else []
-        start_id = next((cid for cid in yaml_ids if cid in connected_ids), None)
-        usb_index = connected_ids.get(start_id, cameras[0]["usb_index"])
-        cam_ctx = ZwoAsiCamera(index=usb_index)
+            logging.warning("No ZWO ASI cameras found — starting without camera.")
+            cam_ctx = NullCamera()
+        else:
+            # Pick the first connected camera in YAML order; fall back to USB order.
+            connected_ids = {c.get("camera_id", 0): c["usb_index"] for c in cameras}
+            yaml_ids = config.camera_ids() if config else []
+            start_id = next((cid for cid in yaml_ids if cid in connected_ids), None)
+            usb_index = connected_ids.get(start_id, cameras[0]["usb_index"])
+            cam_ctx = ZwoAsiCamera(index=usb_index)
 
     catalog      = load_catalog(str(_CATALOG_PATH))
     moon_catalog = load_moon_catalog(str(_MOON_CATALOG_PATH))
@@ -1218,25 +1226,91 @@ def main() -> None:
             image_path.mkdir(parents=True, exist_ok=True)
             GalleryServer(image_path, port=hotspot.port).start()
 
-        # QR surface built once from hotspot credentials (static)
-        _qr_surf: pygame.Surface | None = _make_qr_surface(hotspot.wifi_qr_data)
+        # QR surface — WiFi join QR on Pi; gallery URL QR on Mac/Windows
+        _is_pi = sys.platform == "linux"
+
+        def _get_local_ip() -> str:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.connect(("8.8.8.8", 80))
+                    return _s.getsockname()[0]
+            except Exception:
+                return "localhost"
+
+        if _is_pi:
+            _qr_data  = hotspot.wifi_qr_data
+            _qr_line1 = f"Join WiFi: {hotspot.ssid}  •  pw: {hotspot.password}"
+            _qr_line2 = "Then open your browser — gallery loads automatically"
+        else:
+            _local_ip    = _get_local_ip()
+            _gallery_url = f"http://{_local_ip}:{hotspot.port}"
+            _qr_data  = _gallery_url
+            _qr_line1 = f"Gallery: {_gallery_url}"
+            _qr_line2 = ""
+
+        _qr_surf: pygame.Surface | None = _make_qr_surface(_qr_data)
         _qr_timer: list[float] = [0.0]   # seconds remaining for QR overlay
-        _QR_DURATION = 10.0
+        _QR_DURATION = 4.0
+        _save_frame_ref: list[np.ndarray | None] = [None]  # latest displayed uint8 frame
 
         def _on_save() -> None:
             if image_path is None:
                 logging.warning("image_path not set in configuration.yaml — cannot save")
                 _close_menu()
                 return
+
+            save_frame = _save_frame_ref[0]
+            if save_frame is None:
+                logging.warning("No frame available to save yet")
+                _close_menu()
+                return
+
+            # Scale stacked frame to the displayed image dimensions
+            out_w, out_h = img_rect.width, img_rect.height
+            scaled = cv2.resize(save_frame, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            bgr = (cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGR)
+                   if scaled.ndim == 2
+                   else scaled)  # already BGR from cv2 debayer pipeline
+
+            # Text annotations
+            exp_s   = _exposure_ref[0] / 1_000_000
+            stats   = [
+                f"exp {exp_s:.3g}s",
+                f"total {stacker.t_accum:.0f}s",
+                f"frames {stacker.frame_count}",
+                time.strftime("%Y-%m-%d"),
+            ]
+            wm_text = "impatientastronomy.com"
+
+            cv_font    = cv2.FONT_HERSHEY_SIMPLEX
+            margin     = max(8, out_h // 80)
+            stat_scale = max(0.35, out_h / 2000)
+            wm_scale   = max(0.4,  out_h / 1800)
+
+            def _shadowed(img, text, org, scale, thick):
+                cv2.putText(img, text, (org[0] + 1, org[1] + 1),
+                            cv_font, scale, (30, 30, 30), thick + 1, cv2.LINE_AA)
+                cv2.putText(img, text, org,
+                            cv_font, scale, (220, 220, 220), thick, cv2.LINE_AA)
+
+            # Left side, vertically stacked from bottom up
+            (_, line_h), baseline = cv2.getTextSize("A", cv_font, stat_scale, 1)
+            line_step = line_h + baseline + max(2, out_h // 150)
+            for i, line in enumerate(reversed(stats)):
+                y = out_h - margin - i * line_step
+                _shadowed(bgr, line, (margin, y), stat_scale, 1)
+
+            # Bottom-centre watermark
+            (ww, _), _ = cv2.getTextSize(wm_text, cv_font, wm_scale, 1)
+            _shadowed(bgr, wm_text, ((out_w - ww) // 2, out_h - margin), wm_scale, 1)
+
             ts   = time.strftime("%Y-%m-%d_%H-%M-%S")
             path = image_path / f"{ts}.jpg"
-            # Capture the current screen (includes status bars)
-            pixels = pygame.surfarray.array3d(screen)   # (W, H, 3) RGB
-            pixels = pixels.swapaxes(0, 1)              # → (H, W, 3)
-            bgr    = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
             cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
             logging.info("Saved %s", path)
             _qr_timer[0] = _QR_DURATION
+            if not _is_pi:
+                webbrowser.open(f"http://localhost:{hotspot.port}")
             _close_menu()
 
         def _on_clear_images() -> None:
@@ -1336,14 +1410,17 @@ def main() -> None:
             return threading.Thread(target=_worker, daemon=True)
 
         _stop_grab  = threading.Event()
-        _grab_thread = _make_grab_worker(_stop_grab)
-        _grab_thread.start()
+        _grab_thread = None
+        if not isinstance(cam, NullCamera):
+            _grab_thread = _make_grab_worker(_stop_grab)
+            _grab_thread.start()
 
         _focus_roi_saved: tuple[int, int, int, int] | None = None
 
         def _stop_and_reset_grab() -> None:
             _stop_grab.set()
-            _grab_thread.join(timeout=5.0)
+            if _grab_thread is not None:
+                _grab_thread.join(timeout=5.0)
             grabber.reset()
 
         def _restart_grab() -> None:
@@ -1732,12 +1809,14 @@ def main() -> None:
                             data8 = stretch_to_uint8(fdata[y1:y2, x1:x2])
                         last_surface = pygame.transform.smoothscale(
                             to_surface(data8), (img_rect.width, img_rect.height))
+                        _save_frame_ref[0] = data8
 
                     elif state.mode == ViewMode.LIVE:
                         ae.update(fdata)
                         data8 = stretch_to_uint8(fdata, brightness=state.brightness)
                         last_surface = pygame.transform.smoothscale(
                             to_surface(data8), (img_rect.width, img_rect.height))
+                        _save_frame_ref[0] = data8
 
                 else:
                     # Menu open: still run AE so exposure stays current
@@ -1759,6 +1838,7 @@ def main() -> None:
                 if display8 is not None:
                     last_surface = pygame.transform.smoothscale(
                         to_surface(display8), (img_rect.width, img_rect.height))
+                    _save_frame_ref[0] = display8
 
             # -- render -------------------------------------------------------
             screen.fill(BLACK)
@@ -1772,7 +1852,10 @@ def main() -> None:
                 screen.blit(_apply_zoom_pan(last_surface, state), img_rect.topleft)
             else:
                 f = _font(14)
-                label = f.render("Waiting for first frame...", True, DIM)
+                msg = ("No camera connected"
+                       if isinstance(cam, NullCamera)
+                       else "Waiting for first frame...")
+                label = f.render(msg, True, DIM)
                 cx = layout["central"].centerx - label.get_width() // 2
                 cy = layout["central"].centery - label.get_height() // 2
                 screen.blit(label, (cx, cy))
@@ -1902,7 +1985,8 @@ def main() -> None:
             if _qr_timer[0] > 0:
                 _qr_timer[0] -= dt
                 if _qr_surf is not None:
-                    _render_qr_overlay(screen, _qr_surf, layout, hotspot,
+                    _render_qr_overlay(screen, _qr_surf, layout,
+                                       _qr_line1, _qr_line2,
                                        _qr_timer[0], _QR_DURATION)
 
             # Alert overlay
@@ -1918,7 +2002,7 @@ def main() -> None:
                 hud_bot = ""
             elif state.mode == ViewMode.ACCUMULATE:
                 hud_top = (
-                    f"STACK  exp={stack_seq.current:.4g}s  t={stacker.t_accum:.1f}s"
+                    f"Stacking  exp={stack_seq.current:.4g}s  t={stacker.t_accum:.1f}s"
                 )
                 hud_bot = (
                     f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  "
@@ -1927,7 +2011,7 @@ def main() -> None:
                 )
             else:
                 hud_top = (
-                    f"LIVE  exp={ae.current:.4g}s  fps={fps_display:.1f}"
+                    f"Streaming  exp={ae.current:.4g}s  fps={fps_display:.1f}"
                 )
                 hud_bot = (
                     f"frames={frame_count}  skipped=0  "
@@ -1955,7 +2039,8 @@ def main() -> None:
             pygame.display.flip()
 
         _stop_grab.set()
-        _grab_thread.join(timeout=5.0)
+        if _grab_thread is not None:
+            _grab_thread.join(timeout=5.0)
 
         for _ec in _extra_cams:
             try:

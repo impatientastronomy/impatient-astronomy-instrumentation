@@ -8,8 +8,9 @@ Usage:
 What it does:
     1. Checks that uv is installed and gives platform-specific install instructions if not
     2. Installs all Python dependencies via uv sync
-    3. Creates ~/digital_eyepiece/{config,cals,sessions,images}/
-    4. Copies config/configuration-example.yaml there if no config exists yet
+    3. Creates ~/digital_eyepiece/{cals,sessions,images}/
+    4. Copies digital_eyepiece/config/configuration-example.yaml to
+       digital_eyepiece/config/configuration.yaml if no config exists yet
     5. macOS only: fixes the libSDL2 duplicate bundled by opencv and pygame
     6. Raspberry Pi only: installs the ZWO ASI udev rule and Waveshare display timings
     7. Raspberry Pi only: pins the two USB WiFi adapters to stable names
@@ -64,11 +65,11 @@ def _install_deps() -> None:
 
 def _setup_data_dirs() -> None:
     print(f"\nSetting up data directory at {DATA_ROOT} ...")
-    for subdir in ("config", "cals", "sessions", "images"):
+    for subdir in ("cals", "sessions", "images"):
         (DATA_ROOT / subdir).mkdir(parents=True, exist_ok=True)
 
-    config_dst = DATA_ROOT / "config" / "configuration.yaml"
-    config_src = REPO_ROOT / "config" / "configuration-example.yaml"
+    config_dst = REPO_ROOT / "digital_eyepiece" / "config" / "configuration.yaml"
+    config_src = REPO_ROOT / "digital_eyepiece" / "config" / "configuration-example.yaml"
 
     if config_dst.exists():
         print("  configuration.yaml already exists — skipping copy.")

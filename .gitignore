@@ -36,5 +36,4 @@ astrocore/camera/asi_sdk/
 legacy_matlab/
 
 # User configuration — never commit personal paths or credentials
-configuration.yaml
-config/configuration.yaml
+digital_eyepiece/config/configuration.yaml

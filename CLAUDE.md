@@ -163,6 +163,7 @@ impatient-astronomy-instrumentation/
 ├── digital_eyepiece/
 │   ├── main.py
 │   ├── zoom_controller.py
+│   ├── config/                ← user config templates (configuration-example.yaml, config-2cam.yaml)
 │   ├── hardware/
 │   │   ├── cad/               ← .step, .stl, and source CAD files
 │   │   └── BOM.csv

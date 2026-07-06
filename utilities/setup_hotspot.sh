@@ -1,98 +1,102 @@
 #!/usr/bin/env bash
-# setup_hotspot.sh — One-time Raspberry Pi hotspot configuration.
+# setup_hotspot.sh — One-time Raspberry Pi guest hotspot configuration.
 #
-# Creates a WiFi access point on wlan-guest (USB dongle, pinned by udev rule)
-# so guests can join and access the AstroEye image gallery without needing
-# the internet.  wlan0 remains free for SSH/setup; wlan-mount connects to
-# the mount's WiFi network.
-# Run install.py first to set up the wlan-guest udev name rule.
+# Creates a concurrent WiFi access point (uap0) on the Pi's built-in radio
+# alongside the existing home-network connection on wlan0.  wlan0 stays on
+# the home network throughout; uap0 broadcasts the AstroEye guest hotspot.
+#
+# The hotspot does NOT start automatically on boot.  The eyepiece app
+# launches it when the user saves the first image and tears it down on exit.
+# SSH over the home network is unaffected.
+#
+# Prerequisites: Pi OS Bookworm.  Run after completing the rest of install.
 #
 # Run once as root:
 #   sudo bash utilities/setup_hotspot.sh
 #
-# Edit SSID / PASSWORD / IP below before running if you changed them
-# in configuration.yaml.
-#
-# Tested on Raspberry Pi OS Bookworm (64-bit).
+# Edit SSID / PASSWORD / IP / PORT below to match your configuration.yaml
+# hotspot section if you changed the defaults there.
 
 set -euo pipefail
 
 SSID="AstroEye"
 PASSWORD="stargazer"
-INTERFACE="wlan-guest"
+AP_IFACE="uap0"
+STA_IFACE="wlan0"
 IP="192.168.10.1"
-DHCP_RANGE="192.168.10.10,192.168.10.50,12h"
+CONNECTION_NAME="astro-hotspot"
 PORT=8080
+APP_USER="${SUDO_USER:-pi}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this script as root:  sudo bash $0"
   exit 1
 fi
 
-echo "=== Installing hostapd and dnsmasq ==="
-apt-get install -y hostapd dnsmasq
+if ! ip link show "$STA_IFACE" &>/dev/null; then
+    echo "Error: $STA_IFACE not found."
+    exit 1
+fi
 
-echo "=== Setting static IP on $INTERFACE ==="
-cat >> /etc/dhcpcd.conf << EOF
+# Remove existing NM profile if re-running
+if nmcli connection show "$CONNECTION_NAME" &>/dev/null; then
+    echo "Removing existing '$CONNECTION_NAME' profile..."
+    nmcli connection delete "$CONNECTION_NAME"
+fi
 
-# AstroEye hotspot (added by setup_hotspot.sh)
-interface $INTERFACE
-    static ip_address=${IP}/24
-    nohook wpa_supplicant
-EOF
+echo "Creating hotspot NM profile (interface: $AP_IFACE)..."
+nmcli connection add \
+    type wifi \
+    ifname "$AP_IFACE" \
+    con-name "$CONNECTION_NAME" \
+    ssid "$SSID" \
+    mode ap \
+    wifi.band bg \
+    ipv4.method shared \
+    ipv4.addresses "${IP}/24" \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "$PASSWORD" \
+    connection.autoconnect no
 
-echo "=== Configuring dnsmasq ==="
-cat > /etc/dnsmasq.d/astro-hotspot.conf << EOF
-interface=$INTERFACE
-dhcp-range=$DHCP_RANGE
-# Redirect all DNS to Pi so captive portal triggers on any domain
-address=/#/$IP
-EOF
+# DNS redirect: all hostnames resolve to Pi so captive portal triggers on
+# iOS/Android automatically, popping up the gallery page.
+mkdir -p /etc/NetworkManager/dnsmasq-shared.d
+printf 'address=/#/%s\n' "$IP" > /etc/NetworkManager/dnsmasq-shared.d/captive-portal.conf
 
-echo "=== Configuring hostapd ==="
-cat > /etc/hostapd/astro-hotspot.conf << EOF
-interface=$INTERFACE
-driver=nl80211
-ssid=$SSID
-hw_mode=g
-channel=6
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
-wpa=2
-wpa_passphrase=$PASSWORD
-wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP
-EOF
-
-# Point hostapd at our config
-sed -i 's|#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/astro-hotspot.conf"|' \
-    /etc/default/hostapd
-
-echo "=== Setting up iptables captive portal redirect ==="
-# Redirect HTTP (port 80) from hotspot clients to our gallery server
-iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 80 \
-    -j DNAT --to-destination "${IP}:${PORT}"
-# Persist rules across reboots
+# Redirect HTTP (port 80) to gallery port so the gallery serves as the
+# captive portal page phones display after joining.
+echo "Setting up port 80 → ${PORT} redirect..."
 apt-get install -y iptables-persistent
+iptables -t nat -D PREROUTING -i "$AP_IFACE" -p tcp --dport 80 \
+    -j DNAT --to-destination "${IP}:${PORT}" 2>/dev/null || true
+iptables -t nat -A PREROUTING -i "$AP_IFACE" -p tcp --dport 80 \
+    -j DNAT --to-destination "${IP}:${PORT}"
 netfilter-persistent save
 
-echo "=== Enabling services ==="
-systemctl unmask hostapd
-systemctl enable hostapd
-systemctl enable dnsmasq
-systemctl restart dhcpcd
-systemctl start hostapd
-systemctl start dnsmasq
+# Helper scripts invoked by the app — installed to /usr/local/bin so the
+# sudoers entry can reference them by exact path.
+printf '#!/bin/bash\n# Create virtual AP interface on wlan0'\''s radio if not present\nif ! ip link show %s &>/dev/null; then\n    iw dev %s interface add %s type __ap\nfi\nnmcli connection up %s 2>/dev/null || true\n' \
+    "$AP_IFACE" "$STA_IFACE" "$AP_IFACE" "$CONNECTION_NAME" \
+    > /usr/local/bin/astro-hotspot-start
+chmod +x /usr/local/bin/astro-hotspot-start
+
+printf '#!/bin/bash\nnmcli connection down %s 2>/dev/null || true\niw dev %s del 2>/dev/null || true\n' \
+    "$CONNECTION_NAME" "$AP_IFACE" \
+    > /usr/local/bin/astro-hotspot-stop
+chmod +x /usr/local/bin/astro-hotspot-stop
+
+# Passwordless sudo for the app user — scoped to only these two scripts.
+printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-start\n' "$APP_USER" \
+    > /etc/sudoers.d/astro-hotspot
+printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-stop\n'  "$APP_USER" \
+    >> /etc/sudoers.d/astro-hotspot
+chmod 440 /etc/sudoers.d/astro-hotspot
 
 echo ""
 echo "=== Done ==="
-echo "Hotspot SSID : $SSID"
-echo "Password     : $PASSWORD"
-echo "Gallery URL  : http://${IP}:${PORT}"
+echo "  Hotspot SSID : $SSID"
+echo "  Password     : $PASSWORD"
+echo "  Gallery URL  : http://${IP}:${PORT}"
 echo ""
-echo "Reboot recommended:  sudo reboot"
-echo ""
-echo "To generate the printable QR code:"
-echo "  uv run python utilities/print_qr.py"
+echo "The hotspot launches automatically when the first image is saved."
+echo "It shuts down when the app exits.  wlan0 and SSH are unaffected."

@@ -37,6 +37,7 @@ import importlib
 import logging
 import queue
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -1251,7 +1252,8 @@ def main() -> None:
         _qr_surf: pygame.Surface | None = _make_qr_surface(_qr_data)
         _qr_timer: list[float] = [0.0]   # seconds remaining for QR overlay
         _QR_DURATION = 4.0
-        _save_frame_ref: list[np.ndarray | None] = [None]  # latest displayed uint8 frame
+        _save_frame_ref:    list[np.ndarray | None] = [None]   # latest displayed uint8 frame
+        _hotspot_started:   list[bool]             = [False]  # guest hotspot launched this session
 
         def _on_save() -> None:
             if image_path is None:
@@ -1309,7 +1311,11 @@ def main() -> None:
             cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
             logging.info("Saved %s", path)
             _qr_timer[0] = _QR_DURATION
-            if not _is_pi:
+            if _is_pi:
+                if not _hotspot_started[0]:
+                    subprocess.Popen(["sudo", "/usr/local/bin/astro-hotspot-start"])
+                    _hotspot_started[0] = True
+            else:
                 webbrowser.open(f"http://localhost:{hotspot.port}")
             _close_menu()
 
@@ -2041,6 +2047,10 @@ def main() -> None:
         _stop_grab.set()
         if _grab_thread is not None:
             _grab_thread.join(timeout=5.0)
+
+        if _is_pi and _hotspot_started[0]:
+            subprocess.run(["sudo", "/usr/local/bin/astro-hotspot-stop"],
+                           check=False, timeout=5.0)
 
         for _ec in _extra_cams:
             try:

@@ -315,27 +315,35 @@ override set in your configuration file).
 
 ## 11. Optional: guest image sharing hotspot
 
-The eyepiece can broadcast a WiFi hotspot on `wlan-guest` so observers nearby can view
-saved images on their phones.  `wlan0` remains free for SSH and setup; `wlan-mount`
-connects to the mount's WiFi network.
+The eyepiece can broadcast a guest WiFi hotspot so nearby observers can view saved
+images on their phones.  This uses the Pi's built-in radio to run a concurrent
+access point (`uap0`) alongside the existing home-network connection (`wlan0`) —
+SSH and home-network access are unaffected.
 
-**Hardware required:** a USB WiFi adapter that supports AP mode (most common adapters do).
+The hotspot does **not** start on boot.  The eyepiece app launches it automatically
+when the first image is saved and shuts it down when the app exits.
 
-Run the one-time setup script:
+Run the one-time setup script (can be run over SSH — no physical access needed):
 
 ```bash
 sudo bash utilities/setup_hotspot.sh
 ```
 
-This installs `hostapd` and `dnsmasq`, configures the `wlan-guest` interface with a
-static IP, and enables the captive portal redirect.  See the script header for
-customisation options.
+This creates a NetworkManager AP profile for the virtual `uap0` interface, installs
+a captive portal DNS redirect so phones automatically display the gallery on joining,
+adds a port 80 → 8080 redirect via iptables, and grants the app permission to start
+and stop the hotspot without a password prompt.
 
 Edit the `hotspot:` section in `digital_eyepiece/config/configuration.yaml` if you
 changed the SSID, password, or IP address in the script.
 
-After setup and a reboot, the hotspot starts automatically.  To print the QR code for
-guests to scan:
+**Using it:**
+1. Save an image in the app (Action Menu → Save)
+2. A QR code appears on screen — scan it with a phone to join `AstroEye`
+3. The gallery opens automatically via captive portal
+4. The hotspot shuts down when the app exits
+
+To print the QR code for guests to scan separately:
 
 ```bash
 uv run python utilities/print_qr.py

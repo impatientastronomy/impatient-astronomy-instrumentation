@@ -187,7 +187,7 @@ attempt to connect, the software will show an alert and continue running.
 To connect immediately (if the mount is already on):
 
 ```bash
-nmcli connection up mount-wifi
+sudo nmcli connection up mount-wifi
 ```
 
 ---

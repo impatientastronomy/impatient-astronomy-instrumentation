@@ -190,12 +190,10 @@ def _setup_pi() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 7. Raspberry Pi: pin USB WiFi adapters to stable interface names
+# 7. Raspberry Pi: pin the USB WiFi adapter to a stable interface name
 #
-# Both Edimax adapters are identical so the kernel may assign wlan1/wlan2 in
-# any order across reboots.  A udev rule keyed on each adapter's MAC address
-# gives them stable descriptive names (wlan-mount, wlan-guest) regardless of
-# USB port order.
+# A udev rule keyed on the adapter's MAC address gives it the stable name
+# wlan-mount regardless of which USB port it is plugged into.
 # ---------------------------------------------------------------------------
 
 _WIFI_RULES_DST = Path("/etc/udev/rules.d/70-wifi-names.rules")
@@ -235,23 +233,19 @@ def _setup_wifi_names() -> bool:
         return False
 
     adapters = _get_usb_wlan_interfaces()
-    if len(adapters) < 2:
-        print(f"  Found {len(adapters)} USB WiFi adapter(s) — need 2 to assign names.")
-        print("  Plug in both Edimax adapters and re-run install.py to complete this step.")
+    if len(adapters) < 1:
+        print("  No USB WiFi adapter found — plug in the mount WiFi adapter and re-run.")
         return False
 
     mount_iface, mount_mac = adapters[0]
-    guest_iface, guest_mac = adapters[1]
 
     rules = (
-        '# Pin USB WiFi adapters to stable names (added by install.py)\n'
+        '# Pin USB WiFi adapter to stable name (added by install.py)\n'
         f'SUBSYSTEM=="net", ACTION=="add", ATTR{{address}}=="{mount_mac}", NAME="wlan-mount"\n'
-        f'SUBSYSTEM=="net", ACTION=="add", ATTR{{address}}=="{guest_mac}", NAME="wlan-guest"\n'
     )
 
-    print("  Assigning stable WiFi interface names (requires sudo)...")
+    print("  Assigning stable WiFi interface name (requires sudo)...")
     print(f"    wlan-mount → {mount_mac}  (was {mount_iface})")
-    print(f"    wlan-guest → {guest_mac}  (was {guest_iface})")
     subprocess.run(
         ["sudo", "tee", str(_WIFI_RULES_DST)],
         input=rules.encode(),

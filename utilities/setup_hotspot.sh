@@ -75,8 +75,8 @@ netfilter-persistent save
 
 # Helper scripts invoked by the app — installed to /usr/local/bin so the
 # sudoers entry can reference them by exact path.
-printf '#!/bin/bash\n# Create virtual AP interface on wlan0'\''s radio if not present\nif ! ip link show %s &>/dev/null; then\n    iw dev %s interface add %s type __ap\nfi\nnmcli connection up %s 2>/dev/null || true\n' \
-    "$AP_IFACE" "$STA_IFACE" "$AP_IFACE" "$CONNECTION_NAME" \
+printf '#!/bin/bash\nif ! ip link show %s &>/dev/null; then\n    iw dev %s interface add %s type __ap\nfi\nif nmcli connection show --active %s &>/dev/null; then\n    exit 0\nfi\nfor i in $(seq 10); do\n    nmcli device status 2>/dev/null | grep -q "^%s.*disconnected" && break\n    sleep 0.5\ndone\nnmcli connection up %s\n' \
+    "$AP_IFACE" "$STA_IFACE" "$AP_IFACE" "$CONNECTION_NAME" "$AP_IFACE" "$CONNECTION_NAME" \
     > /usr/local/bin/astro-hotspot-start
 chmod +x /usr/local/bin/astro-hotspot-start
 

@@ -334,6 +334,11 @@ a captive portal DNS redirect so phones automatically display the gallery on joi
 adds a port 80 → 8080 redirect via iptables, and grants the app permission to start
 and stop the hotspot without a password prompt.
 
+> **Expected dialog:** during the script you will see a prompt asking whether to save
+> current IPv4/IPv6 firewall rules.  This comes from the `iptables-persistent` package.
+> Answer **Yes** to both.  The script also saves the rules explicitly, so either answer
+> is fine, but Yes is cleaner.
+
 Edit the `hotspot:` section in `digital_eyepiece/config/configuration.yaml` if you
 changed the SSID, password, or IP address in the script.
 

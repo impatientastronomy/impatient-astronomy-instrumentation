@@ -1241,7 +1241,7 @@ def main() -> None:
         if _is_pi:
             _qr_data  = hotspot.wifi_qr_data
             _qr_line1 = f"Join WiFi: {hotspot.ssid}  •  pw: {hotspot.password}"
-            _qr_line2 = "Then open your browser — gallery loads automatically"
+            _qr_line2 = f"Then open: {hotspot.gallery_url}"
         else:
             _local_ip    = _get_local_ip()
             _gallery_url = f"http://{_local_ip}:{hotspot.port}"

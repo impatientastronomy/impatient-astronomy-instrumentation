@@ -6,7 +6,7 @@
 # the home network throughout; uap0 broadcasts the AstroEye guest hotspot.
 #
 # The hotspot does NOT start automatically on boot.  The eyepiece app
-# launches it when the user saves the first image and tears it down on exit.
+# launches it on startup and tears it down on exit.
 # SSH over the home network is unaffected.
 #
 # Prerequisites: Pi OS Bookworm.  Run after completing the rest of install.
@@ -98,5 +98,5 @@ echo "  Hotspot SSID : $SSID"
 echo "  Password     : $PASSWORD"
 echo "  Gallery URL  : http://${IP}:${PORT}"
 echo ""
-echo "The hotspot launches automatically when the first image is saved."
+echo "The hotspot launches automatically when the app starts."
 echo "It shuts down when the app exits.  wlan0 and SSH are unaffected."

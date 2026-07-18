@@ -257,6 +257,8 @@ def _build_action_menu(
         return "Stop Recording" if state.recording else "Record"
 
     def _connect_label() -> str:
+        if state.mount_connecting:
+            return "Connecting…"
         return "Disconnect" if state.mount_connected else "Connect"
 
     def _toggle_connect() -> None:
@@ -1066,6 +1068,8 @@ def main() -> None:
     cam_config_ref: list[CameraConfig] = [CameraConfig()]
     fov_ref:        list[float]        = [30.0]
     mount_holder:   list               = [None]
+    _mount_pos:     list               = [None]   # cached (ra_h, dec_deg) from poll thread
+    _MOUNT_CONNECT_DONE = pygame.event.custom_type()
     overlay_style = load_overlay_style(
         _OVERLAY_STYLE_PATH,
         cam_config_ref[0].overlay_style,
@@ -1093,28 +1097,37 @@ def main() -> None:
         driver = config.mount_driver if config else ""
         if not driver:
             return
-        try:
-            mod = importlib.import_module(f"astrocore.mount.{driver}")
-            cls = getattr(mod, "Driver", None)
-            if cls is None:
-                return
-            mount_holder[0] = cls()
-            state.mount_connected = True
+        state.mount_connecting = True
+
+        def _worker() -> None:
             try:
-                state.mount_tracking = mount_holder[0].is_tracking
-            except Exception:
-                state.mount_tracking = False
-            if not state.mount_tracking:
-                logging.info("Mount connected but not tracking — overlay will use north horizon")
-        except Exception as exc:
-            logging.warning("Mount connect failed: %s", exc)
+                mod = importlib.import_module(f"astrocore.mount.{driver}")
+                cls = getattr(mod, "Driver", None)
+                if cls is None:
+                    pygame.event.post(pygame.event.Event(
+                        _MOUNT_CONNECT_DONE, mount=None, error="No Driver in module"))
+                    return
+                mount = cls()
+                try:
+                    tracking = mount.is_tracking
+                except Exception:
+                    tracking = False
+                pygame.event.post(pygame.event.Event(
+                    _MOUNT_CONNECT_DONE, mount=mount, tracking=tracking, error=None))
+            except Exception as exc:
+                pygame.event.post(pygame.event.Event(
+                    _MOUNT_CONNECT_DONE, mount=None, tracking=False, error=str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _disconnect_mount() -> None:
         if mount_holder[0] is not None:
             mount_holder[0].disconnect()
             mount_holder[0] = None
-        state.mount_connected = False
-        state.mount_tracking  = False
+        _mount_pos[0] = None
+        state.mount_connected  = False
+        state.mount_tracking   = False
+        state.mount_connecting = False
 
     with cam_ctx as cam:
         _cam_configured = config is not None and cam.info.camera_id in config.camera_ids()
@@ -1265,6 +1278,18 @@ def main() -> None:
             )
             _hotspot_started[0] = True
 
+        def _pos_poll() -> None:
+            """Background thread: keeps _mount_pos cache fresh every 500 ms."""
+            while True:
+                m = mount_holder[0]
+                if m is not None:
+                    try:
+                        _mount_pos[0] = m.position
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+
+        threading.Thread(target=_pos_poll, daemon=True).start()
 
         def _on_save() -> None:
             if image_path is None:
@@ -1518,6 +1543,17 @@ def main() -> None:
                 if event.type == pygame.QUIT:
                     running = False
 
+                elif event.type == _MOUNT_CONNECT_DONE:
+                    state.mount_connecting = False
+                    if event.error:
+                        logging.warning("Mount connect failed: %s", event.error)
+                    else:
+                        mount_holder[0] = event.mount
+                        state.mount_connected = True
+                        state.mount_tracking  = event.tracking
+                        if not event.tracking:
+                            logging.info("Mount connected but not tracking — overlay will use north horizon")
+
                 elif event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_q, pygame.K_ESCAPE):
                         if state.active_menu:
@@ -1638,12 +1674,9 @@ def main() -> None:
 
                             def _cursor_to_radec() -> tuple[float, float] | None:
                                 """Convert the right-click screen position to RA/Dec."""
-                                if mount_holder[0] is None:
+                                if mount_holder[0] is None or _mount_pos[0] is None:
                                     return None
-                                try:
-                                    ra_h, dec_deg_m = mount_holder[0].position
-                                except Exception:
-                                    return None
+                                ra_h, dec_deg_m = _mount_pos[0]
                                 alt_m, az_m = radec_to_altaz(ra_h, dec_deg_m, lat, lon)
                                 aspect_m = img_rect.height / img_rect.width
                                 nx = (mx - img_rect.left) / img_rect.width
@@ -1886,8 +1919,8 @@ def main() -> None:
                 # changed (mount barely moves between frames) and always skip
                 # it when a menu is open (overlay is hidden behind the panel).
                 try:
-                    if state.all_sky_mode and mount_holder[0] is not None:
-                        ra_h, dec_deg = mount_holder[0].position
+                    if state.all_sky_mode and mount_holder[0] is not None and _mount_pos[0] is not None:
+                        ra_h, dec_deg = _mount_pos[0]
                         alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
                         aspect = img_rect.height / img_rect.width
                         new_key = (
@@ -1946,8 +1979,8 @@ def main() -> None:
                                 ov_arr.tobytes(), (img_rect.width, img_rect.height), "RGBA")
                             _ov_key = new_key
 
-                    elif mount_holder[0] is not None:
-                        ra_h, dec_deg = mount_holder[0].position
+                    elif mount_holder[0] is not None and _mount_pos[0] is not None:
+                        ra_h, dec_deg = _mount_pos[0]
                         alt_deg, az_deg = radec_to_altaz(ra_h, dec_deg, lat, lon)
                         eff_fov = fov_ref[0] / state.zoom_level
                         aspect  = img_rect.height / img_rect.width

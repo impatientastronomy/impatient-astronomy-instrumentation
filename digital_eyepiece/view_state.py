@@ -61,8 +61,9 @@ class ViewState:
     overlay_active: bool = False
     sky_map_fov: float = 20.0       # active FOV (degrees) while in all_sky_mode
     moon_mode: bool = False         # True = moon feature overlay instead of sky catalog
-    mount_connected: bool = False
-    mount_tracking:  bool = False   # True only after connect confirms tracking or sync
+    mount_connected:  bool = False
+    mount_tracking:   bool = False   # True only after connect confirms tracking or sync
+    mount_connecting: bool = False   # True while async connect is in progress
     all_sky_mode: bool = False
     paused: bool = False
     recording: bool = False

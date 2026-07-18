@@ -1,21 +1,25 @@
 """
 ZWO AM5 mount driver.
 
-The AM5 speaks LX200 over a TCP connection on port 4030.  When operating as
-a WiFi hotspot (the normal mode) it is always the gateway at x.x.x.1, so
-auto-detection finds it on the first probe.
+The AM5 speaks LX200 over a TCP connection on port 4030.  Auto-detection
+tries three strategies in order:
+
+1. Hotspot mode (fast): AM5 is always the gateway at x.x.x.1.
+2. ARP neighbours: probe recently seen hosts — catches station mode instantly.
+3. Parallel subnet scan: scans .2–.254 on every local /24 (full fallback).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import socket
 import subprocess
 
 from .lx200 import Lx200Mount
 
-_AM5_PORT    = 4030
-_DETECT_TIMEOUT = 0.3   # seconds per IP probe during auto-detection
+_AM5_PORT       = 4030
+_DETECT_TIMEOUT = 0.3   # seconds per IP probe
 
 
 class ZwoAm5(Lx200Mount):
@@ -49,15 +53,17 @@ class ZwoAm5(Lx200Mount):
         super().__init__(host=host, port=port, timeout=timeout)
 
 
-# ── IP auto-detection ─────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _probe(ip: str, port: int) -> str | None:
+    try:
+        with socket.create_connection((ip, port), timeout=_DETECT_TIMEOUT):
+            return ip
+    except OSError:
+        return None
+
 
 def _all_interface_ips() -> list[str]:
-    """
-    Return all IPv4 addresses assigned to local network interfaces.
-
-    Tries ifconfig (macOS + older Linux) then ip addr (newer Linux/Pi).
-    Falls back to the UDP routing trick if neither is available.
-    """
     for cmd in (["ifconfig"], ["ip", "addr"]):
         try:
             out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
@@ -67,8 +73,6 @@ def _all_interface_ips() -> list[str]:
                 return ips
         except (OSError, subprocess.SubprocessError):
             pass
-
-    # Last resort: routing trick (only finds the default-route interface)
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
@@ -77,12 +81,10 @@ def _all_interface_ips() -> list[str]:
             return [ip]
     except OSError:
         pass
-
     return []
 
 
 def _local_subnets() -> list[str]:
-    """Return /24 subnet prefixes for all active IPv4 interfaces."""
     subnets: set[str] = set()
     for ip in _all_interface_ips():
         parts = ip.split(".")
@@ -90,34 +92,38 @@ def _local_subnets() -> list[str]:
     return list(subnets)
 
 
-def _auto_detect_ip(port: int, max_host: int = 10) -> str | None:
-    """
-    Find the AM5 on the local network.
+def _arp_neighbors() -> list[str]:
+    """Return IPs from the kernel ARP/neighbour table — populated by recent traffic."""
+    try:
+        out = subprocess.check_output(["ip", "neigh"], text=True, stderr=subprocess.DEVNULL)
+        return re.findall(r"^(\d+\.\d+\.\d+\.\d+)", out, re.MULTILINE)
+    except (OSError, subprocess.SubprocessError):
+        return []
 
-    Fast path: try the gateway (.1) on every local subnet — the AM5 is always
-    the gateway when in hotspot mode, so this usually succeeds on the first probe.
-    Fallback: scan .2 through .max_host on each subnet for station mode.
-    """
+
+def _auto_detect_ip(port: int) -> str | None:
     subnets = _local_subnets()
     if not subnets:
         return None
 
+    # 1. Hotspot mode: AM5 is always the gateway (.1)
     for subnet in subnets:
-        ip = f"{subnet}1"
-        try:
-            with socket.create_connection((ip, port), timeout=_DETECT_TIMEOUT):
-                return ip
-        except OSError:
-            pass
+        if result := _probe(f"{subnet}1", port):
+            return result
 
-    for subnet in subnets:
-        for i in range(2, max_host + 1):
-            ip = f"{subnet}{i}"
-            try:
-                with socket.create_connection((ip, port), timeout=_DETECT_TIMEOUT):
-                    return ip
-            except OSError:
-                pass
+    # 2. ARP neighbours: finds the AM5 instantly in station mode if it has
+    #    been seen recently (e.g. DHCP lease, prior ping, or ongoing traffic)
+    for ip in _arp_neighbors():
+        if result := _probe(ip, port):
+            return result
+
+    # 3. Full parallel scan of .2–.254 on every local subnet
+    candidates = [f"{subnet}{i}" for subnet in subnets for i in range(2, 255)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as ex:
+        futs = {ex.submit(_probe, ip, port): ip for ip in candidates}
+        for fut in concurrent.futures.as_completed(futs):
+            if (result := fut.result()) is not None:
+                return result
 
     return None
 

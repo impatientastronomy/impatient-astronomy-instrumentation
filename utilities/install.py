@@ -13,8 +13,7 @@ What it does:
        digital_eyepiece/config/configuration.yaml if no config exists yet
     5. macOS only: fixes the libSDL2 duplicate bundled by opencv and pygame
     6. Raspberry Pi only: installs the ZWO ASI udev rule and Waveshare display timings
-    7. Raspberry Pi only: pins the two USB WiFi adapters to stable names
-       (wlan-mount and wlan-guest) via a udev rule
+    7. (step removed — USB WiFi adapter no longer needs a pinned name)
 
 Safe to re-run — every step checks whether it has already been applied.
 """
@@ -190,74 +189,6 @@ def _setup_pi() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 7. Raspberry Pi: pin the USB WiFi adapter to a stable interface name
-#
-# A udev rule keyed on the adapter's MAC address gives it the stable name
-# wlan-mount regardless of which USB port it is plugged into.
-# ---------------------------------------------------------------------------
-
-_WIFI_RULES_DST = Path("/etc/udev/rules.d/70-wifi-names.rules")
-
-
-def _get_usb_wlan_interfaces() -> list[tuple[str, str]]:
-    """Return [(iface, mac), ...] for WiFi interfaces attached via USB, skipping wlan0."""
-    result = []
-    net = Path("/sys/class/net")
-    for iface in sorted(net.iterdir()):
-        name = iface.name
-        if not name.startswith("wlan") or name == "wlan0":
-            continue
-        # Check the device is USB-attached by looking for 'usb' in its device path
-        device_link = iface / "device"
-        if not device_link.exists():
-            continue
-        try:
-            real = device_link.resolve()
-            if "usb" not in str(real).lower():
-                continue
-        except OSError:
-            continue
-        mac_path = iface / "address"
-        if mac_path.exists():
-            result.append((name, mac_path.read_text().strip()))
-    return result
-
-
-def _setup_wifi_names() -> bool:
-    """Returns True if a reboot is required."""
-    if platform.machine() != "aarch64":
-        return False
-
-    if _WIFI_RULES_DST.exists():
-        print("  WiFi name rules already installed, skipping.")
-        return False
-
-    adapters = _get_usb_wlan_interfaces()
-    if len(adapters) < 1:
-        print("  No USB WiFi adapter found — plug in the mount WiFi adapter and re-run.")
-        return False
-
-    mount_iface, mount_mac = adapters[0]
-
-    rules = (
-        '# Pin USB WiFi adapter to stable name (added by install.py)\n'
-        f'SUBSYSTEM=="net", ACTION=="add", ATTR{{address}}=="{mount_mac}", NAME="wlan-mount"\n'
-    )
-
-    print("  Assigning stable WiFi interface name (requires sudo)...")
-    print(f"    wlan-mount → {mount_mac}  (was {mount_iface})")
-    subprocess.run(
-        ["sudo", "tee", str(_WIFI_RULES_DST)],
-        input=rules.encode(),
-        stdout=subprocess.DEVNULL,
-        check=True,
-    )
-    subprocess.run(["sudo", "udevadm", "control", "--reload-rules"], check=True)
-    print(f"  Written to {_WIFI_RULES_DST} — reboot to apply.")
-    return True
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -266,17 +197,17 @@ def main() -> None:
     _install_deps()
     _setup_data_dirs()
     _fix_macos_sdl2()
-    reboot_needed  = _setup_pi()
-    reboot_needed |= _setup_wifi_names()
+    reboot_needed = _setup_pi()
 
     print("\nInstallation complete.")
 
     if reboot_needed:
         print("\nConfiguration changes were made — reboot before continuing:")
         print("  sudo reboot")
-        print("\nAfter rebooting, configure the mount WiFi connection:")
-        print("  Edit utilities/setup_mount_wifi.sh with your mount's SSID and password,")
-        print("  then run:  sudo bash utilities/setup_mount_wifi.sh")
+        print("\nAfter rebooting, set up the guest hotspot:")
+        print("  sudo bash utilities/setup_hotspot.sh")
+        print("\nThen configure your mount to connect to the AstroEye hotspot")
+        print("using the ZWO app (Network → Station Mode).")
     else:
         print("\nRun the digital eyepiece with:")
         print("  uv run python -m digital_eyepiece.main")

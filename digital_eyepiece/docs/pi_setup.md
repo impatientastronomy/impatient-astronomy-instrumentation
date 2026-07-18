@@ -141,13 +141,8 @@ The script:
 - On Raspberry Pi: copies the ZWO ASI udev rule to `/etc/udev/rules.d/` (requires sudo)
 - On Raspberry Pi: appends the Waveshare display timings and USB current setting to
   `/boot/firmware/config.txt` (requires sudo)
-- On Raspberry Pi: pins the two USB WiFi adapters to stable names (`wlan-mount` and
-  `wlan-guest`) via a udev rule — both Edimax adapters must be plugged in when this step runs
 
 It is safe to run more than once — each step checks whether it has already been applied.
-
-**Note:** plug in both Edimax WiFi adapters before running the script so the WiFi naming
-step can detect their MAC addresses.
 
 If hardware settings were added, reboot before continuing:
 
@@ -163,32 +158,29 @@ environment variables are required.
 
 ## 6. Configure mount WiFi
 
-This step runs after the reboot from step 5, so the `wlan-mount` interface name is active.
+Rather than the Pi connecting to the mount's WiFi hotspot, the mount connects to
+the Pi as a client.  This avoids a known incompatibility between the AM5's embedded
+WiFi AP and Linux's wpa_supplicant.
 
-Open `utilities/setup_mount_wifi.sh` in a text editor and set the SSID and password to
-match your mount's WiFi hotspot.  For the ZWO AM5, find these in the ZWO app under
-**Network → Hotspot settings**.
+The eyepiece app broadcasts the **AstroEye** guest hotspot on startup.  Configure the
+mount to join that network using the ZWO app:
 
-```bash
-nano utilities/setup_mount_wifi.sh
-```
+1. Open the ZWO app on your phone or Mac while connected to the same network as the mount.
+2. Go to **Network → Station Mode** (or equivalent) in the ZWO app.
+3. Add **AstroEye** with password **stargazer** (or whatever you set in
+   `digital_eyepiece/config/configuration.yaml` under `hotspot:`).
+4. Optionally also add your home network — the mount will connect to whichever is
+   available.  The app auto-detects the mount on any subnet.
 
-Then run it:
+**In the field:** the mount connects to AstroEye automatically when it boots.
+The eyepiece app finds the mount via its IP on the AstroEye network.
 
-```bash
-sudo bash utilities/setup_mount_wifi.sh
-```
+**At home / development:** configure the mount to also connect to your home network.
+With the Pi on the same home network, the app auto-detects the mount there too.
+This allows testing the mount with a laptop before deploying to the Pi.
 
-`wlan-mount` will now connect to the mount automatically whenever the mount is powered
-on.  No action is needed in the eyepiece software — selecting **Mount → Connect** from
-the menu is sufficient.  If the mount is off or out of range when you
-attempt to connect, the software will show an alert and continue running.
-
-To connect immediately (if the mount is already on):
-
-```bash
-sudo nmcli connection up mount-wifi
-```
+> No `setup_mount_wifi.sh` step is needed — mount WiFi is configured in the ZWO app,
+> not on the Pi.
 
 ---
 

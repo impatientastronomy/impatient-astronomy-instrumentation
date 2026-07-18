@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# setup_mount_wifi.sh — Configure wlan-mount to auto-connect to the telescope mount's WiFi.
+# setup_mount_wifi.sh — OBSOLETE. No longer used.
 #
-# The ZWO AM5 (and similar mounts) act as their own WiFi access point.
-# This script tells NetworkManager to connect wlan-mount to that network
-# automatically whenever the mount is powered on.
+# The ZWO AM5's WiFi AP is incompatible with Linux wpa_supplicant.
+# The mount now runs in station mode and connects TO the Pi's AstroEye
+# hotspot (or the home network) instead.  Configure this in the ZWO app
+# under Network → Station Mode.  See digital_eyepiece/docs/pi_setup.md
+# Step 6 for details.
 #
-# Prerequisites:
-#   - Run install.py first with both Edimax adapters plugged in
-#   - Reboot the Pi so the wlan-mount interface name is active
-#
-# Run once as root:
-#   sudo bash utilities/setup_mount_wifi.sh
-#
-# Edit SSID and PASSWORD below to match your mount's WiFi settings.
-# For the ZWO AM5, find these in the ZWO app under Network > Hotspot settings.
+# This file is kept for reference only.
+exit 0
 
 set -euo pipefail
 

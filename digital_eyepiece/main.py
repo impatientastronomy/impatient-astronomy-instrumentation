@@ -1255,6 +1255,11 @@ def main() -> None:
         _save_frame_ref:    list[np.ndarray | None] = [None]   # latest displayed uint8 frame
         _hotspot_started:   list[bool]             = [False]  # guest hotspot launched this session
 
+        if _is_pi:
+            subprocess.Popen(["sudo", "/usr/local/bin/astro-hotspot-start"])
+            _hotspot_started[0] = True
+
+
         def _on_save() -> None:
             if image_path is None:
                 logging.warning("image_path not set in configuration.yaml — cannot save")
@@ -1524,6 +1529,8 @@ def main() -> None:
                         else:
                             state.recording = True
                             recorder.start()
+                    elif event.key == pygame.K_s:
+                        _on_save()
 
                 elif event.type == pygame.MOUSEMOTION:
                     cursor_pos  = event.pos

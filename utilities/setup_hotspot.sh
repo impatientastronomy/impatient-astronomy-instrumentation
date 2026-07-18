@@ -75,14 +75,44 @@ netfilter-persistent save
 
 # Helper scripts invoked by the app — installed to /usr/local/bin so the
 # sudoers entry can reference them by exact path.
-printf '#!/bin/bash\nif ! ip link show %s &>/dev/null; then\n    iw dev %s interface add %s type __ap\nfi\nif nmcli connection show --active %s &>/dev/null; then\n    exit 0\nfi\nfor i in $(seq 10); do\n    nmcli device status 2>/dev/null | grep -q "^%s.*disconnected" && break\n    sleep 0.5\ndone\nnmcli connection up %s\n' \
-    "$AP_IFACE" "$STA_IFACE" "$AP_IFACE" "$CONNECTION_NAME" "$AP_IFACE" "$CONNECTION_NAME" \
-    > /usr/local/bin/astro-hotspot-start
+cat > /usr/local/bin/astro-hotspot-start << SCRIPT
+#!/bin/bash
+# Create uap0 virtual AP interface if it doesn't exist.
+if ! ip link show ${AP_IFACE} &>/dev/null; then
+    iw dev ${STA_IFACE} interface add ${AP_IFACE} type __ap
+fi
+
+# Already active — nothing to do.
+if nmcli connection show --active ${CONNECTION_NAME} &>/dev/null; then
+    exit 0
+fi
+
+# Wait for NM to register and initialize uap0 (up to 10 s).
+for i in \$(seq 20); do
+    nmcli device status 2>/dev/null | grep -q "^${AP_IFACE}.*disconnected" && break
+    sleep 0.5
+done
+
+# Give NM's internal supplicant state a moment to settle before activating.
+sleep 1
+
+# Activate with retries — NM occasionally needs a second attempt.
+for attempt in 1 2 3; do
+    nmcli connection up ${CONNECTION_NAME} 2>/dev/null || true
+    sleep 1
+    ip link show ${AP_IFACE} 2>/dev/null | grep -q "LOWER_UP" && exit 0
+    sleep 2
+done
+
+exit 1
+SCRIPT
 chmod +x /usr/local/bin/astro-hotspot-start
 
-printf '#!/bin/bash\nnmcli connection down %s 2>/dev/null || true\niw dev %s del 2>/dev/null || true\n' \
-    "$CONNECTION_NAME" "$AP_IFACE" \
-    > /usr/local/bin/astro-hotspot-stop
+cat > /usr/local/bin/astro-hotspot-stop << SCRIPT
+#!/bin/bash
+nmcli connection down ${CONNECTION_NAME} 2>/dev/null || true
+iw dev ${AP_IFACE} del 2>/dev/null || true
+SCRIPT
 chmod +x /usr/local/bin/astro-hotspot-stop
 
 # Passwordless sudo for the app user — scoped to only these two scripts.

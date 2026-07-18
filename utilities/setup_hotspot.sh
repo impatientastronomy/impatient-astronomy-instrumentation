@@ -77,40 +77,56 @@ netfilter-persistent save
 # sudoers entry can reference them by exact path.
 cat > /usr/local/bin/astro-hotspot-start << SCRIPT
 #!/bin/bash
+# All output appended to a persistent trace log for debugging.
+LOG=/tmp/astro-hotspot-start.log
+exec >> "\$LOG" 2>&1
+echo "[\$(date)] --- astro-hotspot-start invoked (pid=\$\$) ---"
+
 # Wait for the STA interface to finish connecting — the Broadcom radio
 # can't bring up the AP while it is mid-authentication on wlan0.
+echo "[\$(date)] waiting for ${STA_IFACE} connected..."
 for i in \$(seq 30); do
     nmcli device status 2>/dev/null | grep -q "^${STA_IFACE}.*connected" && break
     sleep 1
 done
+echo "[\$(date)] ${STA_IFACE} state: \$(nmcli -t -f STATE device show ${STA_IFACE} 2>/dev/null)"
 
 # Create uap0 virtual AP interface if it doesn't exist.
 if ! ip link show ${AP_IFACE} &>/dev/null; then
+    echo "[\$(date)] creating ${AP_IFACE}..."
     iw dev ${STA_IFACE} interface add ${AP_IFACE} type __ap
 fi
 
 # Already active — nothing to do.
 if nmcli connection show --active ${CONNECTION_NAME} &>/dev/null; then
+    echo "[\$(date)] already active, exiting."
     exit 0
 fi
 
 # Wait for NM to register and initialize uap0 (up to 10 s).
+echo "[\$(date)] waiting for ${AP_IFACE} disconnected..."
 for i in \$(seq 20); do
     nmcli device status 2>/dev/null | grep -q "^${AP_IFACE}.*disconnected" && break
     sleep 0.5
 done
+echo "[\$(date)] ${AP_IFACE} device status: \$(nmcli -t -f STATE device show ${AP_IFACE} 2>/dev/null)"
 
 # Give NM's internal supplicant state a moment to settle before activating.
 sleep 1
 
 # Activate with retries — NM occasionally needs a second attempt.
 for attempt in 1 2 3; do
+    echo "[\$(date)] attempt \$attempt: nmcli connection up ${CONNECTION_NAME}"
     nmcli connection up ${CONNECTION_NAME} || true
     sleep 1
-    ip link show ${AP_IFACE} 2>/dev/null | grep -q "LOWER_UP" && exit 0
+    if ip link show ${AP_IFACE} 2>/dev/null | grep -q "LOWER_UP"; then
+        echo "[\$(date)] success — ${AP_IFACE} is UP."
+        exit 0
+    fi
     sleep 2
 done
 
+echo "[\$(date)] all attempts failed."
 exit 1
 SCRIPT
 chmod +x /usr/local/bin/astro-hotspot-start
@@ -123,10 +139,14 @@ SCRIPT
 chmod +x /usr/local/bin/astro-hotspot-stop
 
 # Passwordless sudo for the app user — scoped to only these two scripts.
-printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-start\n' "$APP_USER" \
-    > /etc/sudoers.d/astro-hotspot
-printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-stop\n'  "$APP_USER" \
-    >> /etc/sudoers.d/astro-hotspot
+# !requiretty lets sudo run these scripts from a non-TTY context (e.g. Popen).
+{
+    printf '# astro-hotspot: allow %s to start/stop the guest WiFi hotspot\n' "$APP_USER"
+    printf 'Defaults!/usr/local/bin/astro-hotspot-start !requiretty\n'
+    printf 'Defaults!/usr/local/bin/astro-hotspot-stop  !requiretty\n'
+    printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-start\n' "$APP_USER"
+    printf '%s ALL=(ALL) NOPASSWD: /usr/local/bin/astro-hotspot-stop\n'  "$APP_USER"
+} > /etc/sudoers.d/astro-hotspot
 chmod 440 /etc/sudoers.d/astro-hotspot
 
 echo ""

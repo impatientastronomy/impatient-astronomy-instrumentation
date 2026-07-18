@@ -1256,12 +1256,12 @@ def main() -> None:
         _hotspot_started:   list[bool]             = [False]  # guest hotspot launched this session
 
         if _is_pi:
-            _hs_log = open("/tmp/astro-hotspot-start.log", "w")
+            # Script writes its own trace to /tmp/astro-hotspot-start.log.
             subprocess.Popen(
                 ["sudo", "/usr/local/bin/astro-hotspot-start"],
                 stdin=subprocess.DEVNULL,
-                stdout=_hs_log,
-                stderr=_hs_log,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             _hotspot_started[0] = True
 

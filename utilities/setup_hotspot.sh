@@ -105,7 +105,7 @@ sleep 1
 
 # Activate with retries — NM occasionally needs a second attempt.
 for attempt in 1 2 3; do
-    nmcli connection up ${CONNECTION_NAME} 2>/dev/null || true
+    nmcli connection up ${CONNECTION_NAME} || true
     sleep 1
     ip link show ${AP_IFACE} 2>/dev/null | grep -q "LOWER_UP" && exit 0
     sleep 2

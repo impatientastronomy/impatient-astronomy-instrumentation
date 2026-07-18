@@ -75,10 +75,14 @@ netfilter-persistent save
 
 # Helper scripts invoked by the app — installed to /usr/local/bin so the
 # sudoers entry can reference them by exact path.
+LOG_FILE=/var/log/astro-hotspot.log
+touch "$LOG_FILE"
+chmod 644 "$LOG_FILE"   # root writes it; user can read it
+
 cat > /usr/local/bin/astro-hotspot-start << SCRIPT
 #!/bin/bash
 # All output appended to a persistent trace log for debugging.
-LOG=/tmp/astro-hotspot-start.log
+LOG=/var/log/astro-hotspot.log
 exec >> "\$LOG" 2>&1
 echo "[\$(date)] --- astro-hotspot-start invoked (pid=\$\$) ---"
 
@@ -97,10 +101,16 @@ if ! ip link show ${AP_IFACE} &>/dev/null; then
     iw dev ${STA_IFACE} interface add ${AP_IFACE} type __ap
 fi
 
-# Already active — nothing to do.
+# If NM reports the connection as active but the interface isn't actually
+# broadcasting (NO-CARRIER or link not UP), tear it down and restart.
 if nmcli connection show --active ${CONNECTION_NAME} &>/dev/null; then
-    echo "[\$(date)] already active, exiting."
-    exit 0
+    if ip link show ${AP_IFACE} 2>/dev/null | grep -q "LOWER_UP"; then
+        echo "[\$(date)] already active and link is UP, exiting."
+        exit 0
+    fi
+    echo "[\$(date)] NM reports active but link is down — restarting."
+    nmcli connection down ${CONNECTION_NAME} 2>/dev/null || true
+    sleep 1
 fi
 
 # Wait for NM to register and initialize uap0 (up to 10 s).

@@ -77,6 +77,13 @@ netfilter-persistent save
 # sudoers entry can reference them by exact path.
 cat > /usr/local/bin/astro-hotspot-start << SCRIPT
 #!/bin/bash
+# Wait for the STA interface to finish connecting — the Broadcom radio
+# can't bring up the AP while it is mid-authentication on wlan0.
+for i in \$(seq 30); do
+    nmcli device status 2>/dev/null | grep -q "^${STA_IFACE}.*connected" && break
+    sleep 1
+done
+
 # Create uap0 virtual AP interface if it doesn't exist.
 if ! ip link show ${AP_IFACE} &>/dev/null; then
     iw dev ${STA_IFACE} interface add ${AP_IFACE} type __ap

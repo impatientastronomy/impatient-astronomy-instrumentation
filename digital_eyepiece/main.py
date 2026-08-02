@@ -1290,6 +1290,21 @@ def main() -> None:
 
         threading.Thread(target=_pos_poll, daemon=True).start()
 
+        _pi_temp_c: list[float | None] = [None]
+
+        def _temp_poll() -> None:
+            """Background thread: keeps _pi_temp_c cache fresh every 2 s (Pi only)."""
+            _thermal_zone = Path("/sys/class/thermal/thermal_zone0/temp")
+            while True:
+                try:
+                    _pi_temp_c[0] = int(_thermal_zone.read_text()) / 1000.0
+                except (OSError, ValueError):
+                    _pi_temp_c[0] = None
+                time.sleep(2.0)
+
+        if _is_pi:
+            threading.Thread(target=_temp_poll, daemon=True).start()
+
         def _on_save() -> None:
             if image_path is None:
                 logging.warning("image_path not set in configuration.yaml — cannot save")
@@ -2048,12 +2063,15 @@ def main() -> None:
                 _render_alert(screen, alert_message, win_w, win_h)
 
             # Status bars (drawn last so they sit on top)
+            _temp_suffix = (
+                f"  temp={_pi_temp_c[0]:.0f}°C" if _pi_temp_c[0] is not None else ""
+            )
             if state.focus_state == FocusState.ACTIVE:
                 hud_top = (
                     f"FOCUS  exp={ae.current:.4g}s  fps={fps_display:.1f}"
                     f"  — click or any key to exit"
                 )
-                hud_bot = ""
+                hud_bot = _temp_suffix.strip()
             elif state.mode == ViewMode.ACCUMULATE:
                 hud_top = (
                     f"Stacking  exp={stack_seq.current:.4g}s  t={stacker.t_accum:.1f}s"
@@ -2062,6 +2080,7 @@ def main() -> None:
                     f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  "
                     f"{cam_config_ref[0].telescope_description}  "
                     f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
+                    f"{_temp_suffix}"
                 )
             else:
                 hud_top = (
@@ -2071,6 +2090,7 @@ def main() -> None:
                     f"frames={frame_count}  skipped=0  "
                     f"{cam_config_ref[0].telescope_description}  "
                     f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
+                    f"{_temp_suffix}"
                 )
 
             _render_status_bars(

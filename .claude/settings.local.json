@@ -25,7 +25,8 @@
       "Read(//usr/bin/**)",
       "Read(//opt/homebrew/bin/**)",
       "Bash(/usr/bin/python3 *)",
-      "Bash(awk -F: '{print $1\": \"$0}')"
+      "Bash(awk -F: '{print $1\": \"$0}')",
+      "Bash(bash -n utilities/setup_hotspot.sh)"
     ]
   }
 }

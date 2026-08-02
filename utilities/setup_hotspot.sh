@@ -38,6 +38,21 @@ if ! ip link show "$STA_IFACE" &>/dev/null; then
     exit 1
 fi
 
+# Force every wifi connection profile on this device (current and future) to
+# 2.4GHz. The Broadcom radio is shared between wlan0 (STA) and uap0 (AP) and
+# can't run them on different bands at once; the AM5 mount's onboard WiFi is
+# 2.4GHz-only, so a 5GHz STA connection (e.g. a 5GHz home network) breaks the
+# hotspot the mount depends on. This is a device default, so it also covers
+# any wifi profile added later without having to remember to set it per-SSID.
+echo "Forcing 2.4GHz-only default for all wifi connections on this device..."
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/99-wifi-2ghz-only.conf << 'EOF'
+[connection-2ghz-only]
+match-device=type:wifi
+wifi.band=bg
+EOF
+systemctl reload NetworkManager
+
 # Remove existing NM profile if re-running
 if nmcli connection show "$CONNECTION_NAME" &>/dev/null; then
     echo "Removing existing '$CONNECTION_NAME' profile..."
@@ -93,7 +108,7 @@ for i in \$(seq 30); do
     nmcli device status 2>/dev/null | grep -q "^${STA_IFACE}.*connected" && break
     sleep 1
 done
-echo "[\$(date)] ${STA_IFACE} state: \$(nmcli -t -f STATE device show ${STA_IFACE} 2>/dev/null)"
+echo "[\$(date)] ${STA_IFACE} state: \$(nmcli -t -f GENERAL.STATE device show ${STA_IFACE} 2>/dev/null)"
 
 # Create uap0 virtual AP interface if it doesn't exist.
 if ! ip link show ${AP_IFACE} &>/dev/null; then
@@ -119,7 +134,7 @@ for i in \$(seq 20); do
     nmcli device status 2>/dev/null | grep -q "^${AP_IFACE}.*disconnected" && break
     sleep 0.5
 done
-echo "[\$(date)] ${AP_IFACE} device status: \$(nmcli -t -f STATE device show ${AP_IFACE} 2>/dev/null)"
+echo "[\$(date)] ${AP_IFACE} device status: \$(nmcli -t -f GENERAL.STATE device show ${AP_IFACE} 2>/dev/null)"
 
 # Give NM's internal supplicant state a moment to settle before activating.
 sleep 1

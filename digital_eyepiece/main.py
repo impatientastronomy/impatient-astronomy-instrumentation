@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
-import queue
 import socket
 import subprocess
 import sys
@@ -55,7 +54,7 @@ import pygame
 import cv2
 
 from astrocore.camera.catalog import scan_folder
-from astrocore.camera.frame_grabber import FrameGrabber, GrabStatus
+from astrocore.camera.frame_grabber import FrameGrabber, GrabResult, GrabStatus
 from astrocore.camera.virtual_cam import NullCamera, VirtualCamera
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import CameraConfig, Configuration, HotspotConfig, compute_hfov, load
@@ -1417,7 +1416,13 @@ def main() -> None:
         img_rect   = _image_rect(cam_w_ref[0], cam_h_ref[0], layout["central"])
         dispatcher.set_img_rect(img_rect)
 
-        _frame_queue: queue.Queue = queue.Queue(maxsize=2)
+        # Single-slot "latest frame" handoff between the grab worker and the render
+        # loop. A FIFO queue would let stale frames pile up when rendering falls
+        # behind capture, so displayed frames lag real time by multiple frame
+        # periods; storing only the newest result guarantees the render loop
+        # always shows the most recent frame, dropping anything older.
+        _frame_lock  = threading.Lock()
+        _latest_frame: list[GrabResult | None] = [None]
         _exposure_ref = [int(ae.current * 1_000_000)]
         _focus_hardware_roi: bool = False
 
@@ -1445,10 +1450,8 @@ def main() -> None:
                             and recorder is not None
                             and result.raw_frame is not None):
                         recorder.save(result.raw_frame)
-                    try:
-                        _frame_queue.put_nowait(result)
-                    except queue.Full:
-                        pass
+                    with _frame_lock:
+                        _latest_frame[0] = result
             return threading.Thread(target=_worker, daemon=True)
 
         _stop_grab  = threading.Event()
@@ -1821,10 +1824,9 @@ def main() -> None:
                     _exposure_ref[0] = int(stack_seq.current * 1_000_000)
 
             # -- grab frame ---------------------------------------------------
-            try:
-                result = _frame_queue.get_nowait()
-            except queue.Empty:
-                result = None
+            with _frame_lock:
+                result = _latest_frame[0]
+                _latest_frame[0] = None
 
             _stack_dirty = False   # set True when a new frame is added to the stacker
 

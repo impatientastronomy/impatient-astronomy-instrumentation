@@ -21,7 +21,8 @@ Icons open menus:  ★ → Action   ⚙ → Utilities   ☰ → Controls
 
 Mouse
 -----
-Left-click  : over open menu item → select; off menu → cancel; no menu → Stack/Stream
+Left-click  : over open menu item → select; off menu → cancel
+Middle-click: no menu → toggle Stack/Stream
 Right-click : context menu (Slew here / Sync here / SkyMap / Focus / Exit SkyMap)
 Right-hold  : pan image
 Scroll      : zoom
@@ -96,7 +97,6 @@ WINDOW_H = 960
 
 WINDOW_TITLE      = "Digital Eyepiece"
 TARGET_FPS        = 60
-CURSOR_HIDE_DELAY = 5.0
 ALERT_DURATION    = 3.0
 
 FOCUS_ROI_HALF = 200
@@ -1538,7 +1538,6 @@ def main() -> None:
         prev_mode     = state.mode
         _cal_ok       = True
 
-        t_last_move = time.monotonic()
         cursor_pos  = (win_w // 2, win_h // 2)
 
         alert_timer   = 0.0
@@ -1594,7 +1593,6 @@ def main() -> None:
 
                 elif event.type == pygame.MOUSEMOTION:
                     cursor_pos  = event.pos
-                    t_last_move = time.monotonic()
                     dispatcher.on_mouse_move(*event.pos, right_held=bool(event.buttons[2]))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -1649,7 +1647,7 @@ def main() -> None:
                                 _close_menu()
 
                         else:
-                            # No menu open — check icon hits, then toggle
+                            # No menu open — check icon hits
                             if layout["icon_star"].collidepoint(mx, my):
                                 action_menu.reset()
                                 _open_menu("action")
@@ -1658,12 +1656,13 @@ def main() -> None:
                                 _open_menu("utilities")
                             elif layout["icon_sliders"].collidepoint(mx, my):
                                 _open_menu("controls")
-                            else:
-                                # Toggle Stream / Stack
-                                if state.mode == ViewMode.LIVE:
-                                    state.mode = ViewMode.ACCUMULATE
-                                else:
-                                    state.mode = ViewMode.LIVE
+
+                    elif event.button == 2 and not state.active_menu:
+                        # --- Middle-click: toggle Stream / Stack ---
+                        if state.mode == ViewMode.LIVE:
+                            state.mode = ViewMode.ACCUMULATE
+                        else:
+                            state.mode = ViewMode.LIVE
 
                     elif event.button == 3:
                         # --- Right button down: start drag/click tracking ---
@@ -2105,8 +2104,7 @@ def main() -> None:
 
             cursor_visible = (
                 state.active_menu is not None
-                or (state.focus_state == FocusState.OFF
-                    and (time.monotonic() - t_last_move) < CURSOR_HIDE_DELAY)
+                or state.focus_state == FocusState.OFF
             )
             pygame.mouse.set_visible(cursor_visible)
 

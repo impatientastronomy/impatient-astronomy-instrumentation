@@ -7,7 +7,6 @@ Mouse mapping
 Left-click  : toggle Stream/Stack (menu closed) or confirm selection (menu open)
 Right-click : open context menu (no drag) or close menu; also exits all-sky mode
 Right-drag  : pan the zoomed image
-Middle-click: (unused)
 Scroll down : zoom in (cursor-centred) / menu down
 Scroll up   : zoom out / menu up
 
@@ -20,7 +19,6 @@ OVERLAY_DURATION seconds. Call update(dt) every frame to drive the timer.
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Callable
 
 from ..view_state import ViewMode, ViewState
 from .menu import Menu
@@ -70,7 +68,6 @@ class InputDispatcher:
         self._sky_map_fov_min = sky_map_fov_min
         self._sky_map_fov_max = sky_map_fov_max
         self._multi_cam = None
-        self._slew_action: Callable[[], None] | None = None
         self._overlay_timer: float = 0.0
         self._img_rect = None                           # pygame.Rect; set via set_img_rect()
         self._right_drag_start: tuple[int, int] | None = None
@@ -79,10 +76,6 @@ class InputDispatcher:
     def register_multi_cam(self, multi_cam) -> None:
         """Register a MultiCamZoom. Zooming out past native FOV switches cameras."""
         self._multi_cam = multi_cam
-
-    def register_slew_action(self, action: Callable[[], None]) -> None:
-        """Register the mount-slew callback triggered by middle-click."""
-        self._slew_action = action
 
     def set_img_rect(self, rect) -> None:
         """Provide the image display rect so pan/zoom can convert screen→source coords."""
@@ -160,18 +153,6 @@ class InputDispatcher:
         self._right_drag_start = None
         self._right_drag_total = 0.0
         return was_click
-
-    def on_middle_click(self) -> bool:
-        """
-        Slew the mount to the cursor position when mount is connected and
-        overlay is visible. Returns True if a slew was triggered (so the
-        caller can display the "Caution: Mount is moving" alert).
-        """
-        if self._state.mount_connected and self._state.overlay_active:
-            if self._slew_action is not None:
-                self._slew_action()
-            return True
-        return False
 
     def on_mouse_move(self, x: int, y: int, right_held: bool = False) -> None:
         """

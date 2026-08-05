@@ -214,32 +214,6 @@ class TestRightClick:
         assert state.menu_open is True
 
 
-# ---------------------------------------------------------------------------
-# Middle-click (mount slew)
-# ---------------------------------------------------------------------------
-
-class TestMiddleClick:
-    def test_middle_click_returns_false_when_mount_not_connected(self, dispatcher, state):
-        state.overlay_active = True
-        assert dispatcher.on_middle_click() is False
-
-    def test_middle_click_returns_false_when_overlay_not_active(self, dispatcher, state):
-        state.mount_connected = True
-        assert dispatcher.on_middle_click() is False
-
-    def test_middle_click_returns_true_when_conditions_met(self, dispatcher, state):
-        state.mount_connected = True
-        state.overlay_active = True
-        assert dispatcher.on_middle_click() is True
-
-    def test_middle_click_calls_slew_action(self, dispatcher, state):
-        state.mount_connected = True
-        state.overlay_active = True
-        action = MagicMock()
-        dispatcher.register_slew_action(action)
-        dispatcher.on_middle_click()
-        action.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # Mouse move → overlay trigger

@@ -209,6 +209,42 @@ class TestUpdate:
         dispatcher.update(1.0)
         assert state.overlay_active is True
 
+    def test_overlay_does_not_hide_while_pinned(self, dispatcher, state):
+        state.overlay_active = True
+        state.overlay_pinned = True
+        dispatcher._overlay_timer = 0.1
+        dispatcher.update(1.0)
+        assert state.overlay_active is True
+
+
+# ---------------------------------------------------------------------------
+# Overlay pin (show_overlay / mouse-move interaction)
+# ---------------------------------------------------------------------------
+
+class TestOverlayPin:
+    def test_show_overlay_sets_active_and_arms_timer_regardless_of_pin(self, dispatcher, state):
+        state.overlay_pinned = True
+        dispatcher.show_overlay()
+        assert state.overlay_active is True
+        assert dispatcher._overlay_timer == pytest.approx(OVERLAY_DURATION)
+
+    def test_mouse_move_does_not_affect_pinned_flag(self, dispatcher, state):
+        state.mount_connected = True
+        state.overlay_pinned = True
+        dispatcher.on_mouse_move(10, 10)
+        assert state.overlay_pinned is True
+
+    def test_unpinning_then_expiring_hides_overlay(self, dispatcher, state):
+        # Pin on, then simulate the button un-pinning it (as main.py's
+        # _toggle_overlay_button does): flip the flag and re-show.
+        state.overlay_pinned = True
+        dispatcher.show_overlay()
+        state.overlay_pinned = False
+        dispatcher.show_overlay()
+        dispatcher._overlay_timer = 0.1
+        dispatcher.update(0.2)
+        assert state.overlay_active is False
+
 
 # ---------------------------------------------------------------------------
 # Sky map scroll (FOV zoom)

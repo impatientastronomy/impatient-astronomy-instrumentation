@@ -43,17 +43,11 @@ class MoonFeature:
     diameter_km: float      # 0 if unknown/not applicable
 
 
-#: All feature markers render green regardless of type -- the Moon's disk is
-#: bright white, and white/pale markers become unreadable against it.
-_FEATURE_COLORS: dict[str, tuple[int, int, int, int]] = {
-    "crater": (80, 220, 80, 210),
-    "mare":   (80, 220, 80, 160),
-    "mons":   (80, 220, 80, 190),
-    "vallis": (80, 220, 80, 190),
-    "rima":   (80, 220, 80, 190),
-    "other":  (80, 220, 80, 170),
-}
-_DEFAULT_COLOR = (80, 220, 80, 170)
+#: Every feature marker uses this single color, regardless of type -- the
+#: Moon's disk is bright white, and white/pale markers become unreadable
+#: against it. One flat color/alpha for all types so nothing reads as a
+#: different shade against the disk.
+_FEATURE_COLOR: tuple[int, int, int, int] = (80, 220, 80, 200)
 
 
 def _normalize_type(t: str) -> str:
@@ -382,12 +376,7 @@ def compute_moon_overlay(
         if px < 0 or px >= w or py < 0 or py >= h:
             continue
 
-        color = _FEATURE_COLORS.get(feat.feature_type, _DEFAULT_COLOR)
-
-        if feat.feature_type == "mare":
-            _put_pixel(overlay, px, py, (color[0], color[1], color[2], 80))
-        else:
-            _put_pixel(overlay, px, py, color)
+        _put_pixel(overlay, px, py, _FEATURE_COLOR)
 
         table.append({
             "name":        feat.name,

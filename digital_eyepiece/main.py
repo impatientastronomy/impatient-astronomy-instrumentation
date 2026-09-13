@@ -1580,7 +1580,7 @@ def main() -> None:
 
         def _exit_sky_map() -> None:
             state.all_sky_mode      = False
-            state.overlay_active    = False
+            state.overlay_active    = state.overlay_pinned
             state.zoom_center_x     = 0.5
             state.zoom_center_y     = 0.5
             state.sky_map_cam_fov_h = None
@@ -1602,10 +1602,14 @@ def main() -> None:
             state.paused = not state.paused
 
         def _toggle_overlay_button() -> None:
-            if state.overlay_active:
-                state.overlay_active = False
-            else:
-                dispatcher.show_overlay()
+            """
+            Toggle between pinned-always-on and the default mouse-move + auto-hide
+            behavior. Either way, show_overlay() makes the overlay visible right
+            now -- forced on indefinitely if pinning, or for the standard
+            OVERLAY_DURATION window (from which it then auto-hides) if unpinning.
+            """
+            state.overlay_pinned = not state.overlay_pinned
+            dispatcher.show_overlay()
 
         def _toggle_display_panel() -> None:
             if state.active_menu == "controls":
@@ -1647,7 +1651,7 @@ def main() -> None:
             EdgeButton("overlay", "right",
                        lambda: "Overlay",
                        _draw_icon_overlay,
-                       lambda: GREEN if state.overlay_active else GREY,
+                       lambda: GREEN if state.overlay_pinned else GREY,
                        _toggle_overlay_button),
             EdgeButton("skymap", "right",
                        lambda: "SkyMap",

@@ -58,6 +58,8 @@ class ViewState:
     active_camera_index: int = 0
     active_menu: str | None = None      # 'action' | 'controls' | 'utilities' | 'context' | None
     overlay_active: bool = False
+    overlay_pinned: bool = False    # user forced overlay always-on via the edge button;
+                                     # False = overlay follows mouse-move + auto-hide timer
     sky_map_fov: float = 20.0       # active FOV (degrees) while in all_sky_mode
     moon_mode: bool = False         # auto-set each frame: moon feature overlay instead of sky catalog
     mount_connected:  bool = False

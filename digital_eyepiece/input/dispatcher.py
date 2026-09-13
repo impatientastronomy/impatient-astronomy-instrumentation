@@ -15,6 +15,8 @@ Overlay auto-hide
 -----------------
 When the mount is connected, moving the mouse shows the overlay for
 OVERLAY_DURATION seconds. Call update(dt) every frame to drive the timer.
+This auto-hide is suspended while view_state.overlay_pinned is True (the
+user forced the overlay always-on via the edge button) -- see show_overlay().
 """
 
 from __future__ import annotations
@@ -87,6 +89,7 @@ class InputDispatcher:
     def update(self, dt: float) -> None:
         """Call every frame with elapsed seconds to drive the overlay hide timer."""
         if (self._state.overlay_active
+                and not self._state.overlay_pinned
                 and not self._state.active_menu
                 and not self._state.all_sky_mode):
             self._overlay_timer -= dt
@@ -167,7 +170,7 @@ class InputDispatcher:
         if delta > 0:
             if self._state.all_sky_mode:
                 self._state.all_sky_mode = False
-                self._state.overlay_active = False
+                self._state.overlay_active = self._state.overlay_pinned
             new_zoom = min(old_zoom * step, self._zoom_max)
             self._state.zoom_level = new_zoom
             self._update_zoom_center(pos, old_zoom, new_zoom)

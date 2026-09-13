@@ -64,7 +64,7 @@ style1:
     shape:     circle_cross
 
   moon:
-    color:     [235, 235, 225]
+    color:     [80, 220, 80]
     alpha:     230
     mag_limit: 30.0
     max_count: 1

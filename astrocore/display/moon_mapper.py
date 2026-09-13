@@ -43,15 +43,17 @@ class MoonFeature:
     diameter_km: float      # 0 if unknown/not applicable
 
 
+#: All feature markers render green regardless of type -- the Moon's disk is
+#: bright white, and white/pale markers become unreadable against it.
 _FEATURE_COLORS: dict[str, tuple[int, int, int, int]] = {
-    "crater": (230, 210, 170, 210),
-    "mare":   (100, 170, 255, 160),
-    "mons":   (150, 220, 120, 190),
-    "vallis": (255, 180,  80, 190),
-    "rima":   (255, 140, 140, 190),
-    "other":  (200, 200, 200, 170),
+    "crater": (80, 220, 80, 210),
+    "mare":   (80, 220, 80, 160),
+    "mons":   (80, 220, 80, 190),
+    "vallis": (80, 220, 80, 190),
+    "rima":   (80, 220, 80, 190),
+    "other":  (80, 220, 80, 170),
 }
-_DEFAULT_COLOR = (200, 200, 200, 170)
+_DEFAULT_COLOR = (80, 220, 80, 170)
 
 
 def _normalize_type(t: str) -> str:
@@ -301,7 +303,7 @@ def compute_moon_overlay(
     min_diameter_km: float = 0.0,       # skip features smaller than this
     limb_fraction: float = 0.93,        # hide features within this fractional radius of limb
     show_limb: bool = True,             # draw the Moon's disk perimeter as a circle
-    limb_color: tuple[int, int, int, int] = (255, 255, 255, 160),
+    limb_color: tuple[int, int, int, int] = (80, 220, 80, 200),
 ) -> tuple[np.ndarray, list[dict]]:
     """
     Build an RGBA moon feature overlay.

@@ -5,13 +5,14 @@ No hardware or network required.
 Run with: pytest astrocore/tests/test_mount.py -v
 """
 
+import logging
 import math
 from datetime import datetime, timezone
 
 import pytest
 
 from astrocore.mount.coord import altaz_to_radec, radec_to_altaz
-from astrocore.mount.lx200 import _dec_str, _parse_dec, _parse_ra, _ra_str
+from astrocore.mount.lx200 import Lx200Mount, _dec_str, _parse_dec, _parse_ra, _ra_str
 
 # Observer location used across tests
 LAT = 38.44
@@ -116,3 +117,108 @@ class TestRadecToAltaz:
         alt, az = radec_to_altaz(5.5, 20.0, LAT, LON)
         assert -90.0 <= alt <= 90.0
         assert 0.0 <= az < 360.0
+
+
+# ── Lx200Mount socket behavior ───────────────────────────────────────────────
+#
+# FakeSocket models a real TCP stream: `stray` bytes are already sitting in
+# the buffer and visible to recv() immediately (simulating a late/duplicate/
+# unsolicited reply left over from a prior exchange); each entry in
+# `responses` only becomes visible *after* the matching sendall() call,
+# simulating a genuine request/response round trip.
+
+class FakeSocket:
+    def __init__(self, stray: bytes = b"", responses: list[bytes] | None = None):
+        self._available = bytearray(stray)
+        self._pending_responses = list(responses or [])
+        self.sent: list[bytes] = []
+        self._blocking = True
+        self._timeout: float | None = None
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+        if self._pending_responses:
+            self._available += self._pending_responses.pop(0)
+
+    def settimeout(self, t: float | None) -> None:
+        self._timeout = t
+
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+    def setblocking(self, flag: bool) -> None:
+        self._blocking = flag
+
+    def recv(self, bufsize: int) -> bytes:
+        if not self._available:
+            if self._blocking:
+                raise OSError("FakeSocket: no data queued and blocking recv would hang")
+            raise BlockingIOError()
+        chunk = bytes(self._available[:bufsize])
+        del self._available[:bufsize]
+        return chunk
+
+    def close(self) -> None:
+        pass
+
+
+def _mount_with_socket(sock: FakeSocket) -> Lx200Mount:
+    mount = Lx200Mount("dummy-host")
+    mount._sock = sock
+    return mount
+
+
+class TestDrainBeforeSend:
+    def test_cmd_ignores_stray_bytes_ahead_of_its_own_response(self):
+        # A stray reply ("13:19:38#") is already sitting in the buffer when
+        # we go to send :GD# -- without draining first, _cmd() would return
+        # the stray bytes instead of the real declination reply.
+        sock  = FakeSocket(stray=b"13:19:38#", responses=[b"+42*10:05#"])
+        mount = _mount_with_socket(sock)
+        assert mount._cmd(":GD#") == "+42*10:05"
+
+    def test_cmd1_ignores_stray_byte(self):
+        sock  = FakeSocket(stray=b"X", responses=[b"1"])
+        mount = _mount_with_socket(sock)
+        assert mount._cmd1(":MS#") == "1"
+
+    def test_cmdn_drains_before_sending(self):
+        sock  = FakeSocket(stray=b"garbage")
+        mount = _mount_with_socket(sock)
+        mount._cmdn(":Q#")
+        assert bytes(sock._available) == b""
+
+    def test_drain_restores_prior_timeout(self):
+        sock  = FakeSocket(responses=[b"+42*10:05#"])
+        mount = _mount_with_socket(sock)
+        sock.settimeout(7.5)
+        mount._drain()
+        assert sock.gettimeout() == 7.5
+
+
+class TestQueryValidatedRetry:
+    def test_get_ra_retries_past_a_misrouted_dec_reply(self, caplog):
+        # First reply looks like a declination string (has '*') -- invalid
+        # for :GR#. Second reply is a proper RA string.
+        sock  = FakeSocket(responses=[b"+42*10:05#", b"13:19:38#"])
+        mount = _mount_with_socket(sock)
+        with caplog.at_level(logging.WARNING, logger="astrocore.mount.lx200"):
+            ra = mount._get_ra()
+        assert ra == pytest.approx(13 + 19 / 60 + 38 / 3600)
+        assert any("Malformed :GR#" in r.message for r in caplog.records)
+
+    def test_get_dec_retries_past_a_misrouted_ra_reply(self, caplog):
+        sock  = FakeSocket(responses=[b"13:19:38#", b"+42*10:05#"])
+        mount = _mount_with_socket(sock)
+        with caplog.at_level(logging.WARNING, logger="astrocore.mount.lx200"):
+            dec = mount._get_dec()
+        assert dec == pytest.approx(42 + 10 / 60 + 5 / 3600)
+        assert any("Malformed :GD#" in r.message for r in caplog.records)
+
+    def test_get_ra_succeeds_immediately_on_valid_reply(self, caplog):
+        sock  = FakeSocket(responses=[b"06:30:00#"])
+        mount = _mount_with_socket(sock)
+        with caplog.at_level(logging.WARNING, logger="astrocore.mount.lx200"):
+            ra = mount._get_ra()
+        assert ra == pytest.approx(6.5)
+        assert not caplog.records

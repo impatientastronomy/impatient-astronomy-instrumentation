@@ -59,7 +59,7 @@ class OverlayStyle:
         color=(80, 220, 80), alpha=210, mag_limit=8.0,
         max_count=30, size_min=4, size_max=40, shape="circle_cross"))
     moon:    ObjectTypeStyle = field(default_factory=lambda: ObjectTypeStyle(
-        color=(235, 235, 225), alpha=230, mag_limit=30.0,
+        color=(80, 220, 80), alpha=230, mag_limit=30.0,
         max_count=1, size_min=6, size_max=200, shape="circle"))
     planet:  ObjectTypeStyle = field(default_factory=lambda: ObjectTypeStyle(
         color=(255, 200, 120), alpha=230, mag_limit=30.0,

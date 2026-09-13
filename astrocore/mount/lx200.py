@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import socket
 import time
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class Lx200Mount(Mount):
         self._ensure()
         if self._sock is None:
             raise MountError("Not connected")
+        self._drain()
         self._sock.sendall(b":D#")
         data = b""
         self._sock.settimeout(0.5)
@@ -197,20 +199,31 @@ class Lx200Mount(Mount):
 
     def _get_ra(self) -> float:
         self._ensure()
-        return _parse_ra(self._cmd(":GR#"))
+        response = self._query_validated(":GR#", lambda r: ":" in r and "*" not in r)
+        return _parse_ra(response)
 
     def _get_dec(self) -> float:
         self._ensure()
-        # The AM5 does not always respond with the expected '+DD*MM:SS#' format.
-        # Root cause is unknown; retrying immediately always succeeds eventually.
-        # No upper limit: a hard cap risks crashing on what is just a mount quirk.
+        response = self._query_validated(":GD#", lambda r: "*" in r)
+        return _parse_dec(response)
+
+    def _query_validated(self, cmd: str, is_valid: Callable[[str], bool]) -> str:
+        """
+        Send cmd and return its '#'-terminated response, retrying indefinitely
+        if the response doesn't look like what was asked for.
+
+        Some LX200-over-WiFi mounts (confirmed on the AM5) occasionally hand
+        back a stray or misrouted reply instead of the actual one -- root
+        cause unknown, but retrying immediately always succeeds eventually.
+        No upper limit: a hard cap risks crashing on what is just a mount quirk.
+        """
         attempt = 0
         while True:
-            response = self._cmd(":GD#")
-            if "*" in response:
-                return _parse_dec(response)
+            response = self._cmd(cmd)
+            if is_valid(response):
+                return response
             attempt += 1
-            log.warning("Malformed :GD# response (attempt %d): %r", attempt, response)
+            log.warning("Malformed %s response (attempt %d): %r", cmd, attempt, response)
             time.sleep(0.1)
 
     def _ensure(self) -> None:
@@ -218,19 +231,30 @@ class Lx200Mount(Mount):
             self.connect()
 
     def _drain(self) -> None:
-        """Discard any stale bytes in the socket receive buffer."""
+        """
+        Discard any stray bytes already sitting in the receive buffer.
+
+        Called immediately before every command is sent, not just at connect
+        time: a reply that arrives late, gets duplicated, or is otherwise
+        unsolicited (root cause on the AM5 is unknown) would otherwise sit in
+        the buffer and get misread as the response to the *next* command we
+        send -- e.g. a stray RA-shaped reply being returned for a `:GD#` query.
+        """
+        prev_timeout = self._sock.gettimeout()
         self._sock.setblocking(False)
         try:
             while self._sock.recv(_BUFSIZE):
                 pass
         except (BlockingIOError, OSError):
             pass
-        self._sock.setblocking(True)
+        finally:
+            self._sock.settimeout(prev_timeout)
 
     def _cmd(self, cmd: str) -> str:
         """Send command, read '#'-terminated response, return stripped string."""
         if self._sock is None:
             raise MountError("Not connected")
+        self._drain()
         self._sock.sendall(cmd.encode())
         data    = b""
         deadline = time.monotonic() + self._timeout
@@ -248,6 +272,7 @@ class Lx200Mount(Mount):
         """Send command, read a single-byte response (no '#' terminator)."""
         if self._sock is None:
             raise MountError("Not connected")
+        self._drain()
         self._sock.sendall(cmd.encode())
         self._sock.settimeout(self._timeout)
         byte = self._sock.recv(1)
@@ -257,6 +282,7 @@ class Lx200Mount(Mount):
         """Send command with no response expected."""
         if self._sock is None:
             raise MountError("Not connected")
+        self._drain()
         self._sock.sendall(cmd.encode())
 
 

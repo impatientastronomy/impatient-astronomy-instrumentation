@@ -2,10 +2,11 @@
 InputDispatcher — routes mouse events to the right handler based on
 the current viewing context.
 
+Click handling (left-click / right-click-to-open-menu / edge buttons) lives
+directly in main.py's event loop. This dispatcher covers everything else:
+
 Mouse mapping
 -------------
-Left-click  : toggle Stream/Stack (menu closed) or confirm selection (menu open)
-Right-click : open context menu (no drag) or close menu; also exits all-sky mode
 Right-drag  : pan the zoomed image
 Scroll down : zoom in (cursor-centred) / menu down
 Scroll up   : zoom out / menu up
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
-from ..view_state import ViewMode, ViewState
+from ..view_state import ViewState
 from .menu import Menu
 
 OVERLAY_DURATION = 5.0   # seconds the overlay stays visible after mouse move
@@ -86,12 +87,17 @@ class InputDispatcher:
     def update(self, dt: float) -> None:
         """Call every frame with elapsed seconds to drive the overlay hide timer."""
         if (self._state.overlay_active
-                and not self._state.menu_open
+                and not self._state.active_menu
                 and not self._state.all_sky_mode):
             self._overlay_timer -= dt
             if self._overlay_timer <= 0.0:
                 self._state.overlay_active = False
                 self._overlay_timer = 0.0
+
+    def show_overlay(self) -> None:
+        """Show the overlay and (re)arm the auto-hide timer, as if the mouse had moved."""
+        self._state.overlay_active = True
+        self._overlay_timer = OVERLAY_DURATION
 
     # -- event handlers --------------------------------------------------------
 
@@ -110,34 +116,6 @@ class InputDispatcher:
                 self._zoom_sky_map(delta)
             case ScrollContext.IMAGE | ScrollContext.OVERLAY:
                 self._zoom_image(-delta, pos)  # invert: scroll down = zoom in
-
-    def on_left_click(self) -> None:
-        """
-        Menu closed → toggle Stream / Stack mode.
-        Menu open   → confirm selection; close menu if a leaf was chosen.
-        """
-        if self._state.menu_open:
-            should_close = self._menu.select()
-            if should_close:
-                self._state.menu_open = False
-        else:
-            if self._state.mode == ViewMode.LIVE:
-                self._state.mode = ViewMode.ACCUMULATE
-            else:
-                self._state.mode = ViewMode.LIVE
-
-    def on_right_click(self) -> None:
-        """
-        All-sky mode active → open context menu (handled by caller).
-        Menu open           → close menu without selection.
-        Menu closed         → open menu (reset to root).
-        """
-        if self._state.menu_open:
-            self._state.menu_open = False
-            self._menu.reset()
-        else:
-            self._menu.reset()
-            self._state.menu_open = True
 
     def on_right_button_down(self, x: int, y: int) -> None:
         """Record the start of a right-button press for drag/click detection."""
@@ -159,7 +137,7 @@ class InputDispatcher:
         Handle mouse motion.  right_held=True while the right button is pressed,
         enabling pan when the movement exceeds _RIGHT_DRAG_THRESHOLD pixels.
         """
-        if self._state.mount_connected and not self._state.menu_open:
+        if self._state.mount_connected and not self._state.active_menu:
             self._state.overlay_active = True
             self._overlay_timer = OVERLAY_DURATION
 
@@ -168,27 +146,14 @@ class InputDispatcher:
             dy = y - self._right_drag_start[1]
             dist = (dx * dx + dy * dy) ** 0.5
             self._right_drag_total += dist
-            menu_active = getattr(self._state, "active_menu", None) or self._state.menu_open
-            if not menu_active and self._right_drag_total >= _RIGHT_DRAG_THRESHOLD:
+            if not self._state.active_menu and self._right_drag_total >= _RIGHT_DRAG_THRESHOLD:
                 self._pan(dx, dy)
             self._right_drag_start = (x, y)
-
-    def on_back(self) -> None:
-        """
-        Exit the current submenu level. Closes the menu if already at root.
-        Useful for a dedicated hardware back button.
-        """
-        if self._state.menu_open:
-            at_root = self._menu.back()
-            if at_root:
-                self._state.menu_open = False
 
     # -- internal helpers ------------------------------------------------------
 
     def _context(self) -> ScrollContext:
-        # active_menu is the authoritative flag; fall back to menu_open for tests
-        menu_active = getattr(self._state, "active_menu", None) or self._state.menu_open
-        if menu_active:
+        if self._state.active_menu:
             return ScrollContext.MENU
         if self._state.all_sky_mode:
             return ScrollContext.SKY_MAP

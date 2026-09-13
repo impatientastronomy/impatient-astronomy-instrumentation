@@ -6,27 +6,46 @@ displays them in a pygame window with live stacking and sky overlay.
 
 Layout
 ------
-  ┌─────┬──────── Top status bar ────────┬─────┐
-  │     │  ★ mode · exp · gain · fps     │  ⚙  │
-  ├─────┴────────────────────────────────┴─────┤
-  │                                            │
-  │              Central region                │
-  │           (image displayed here)           │
-  │                                            │
-  ├─────┬──────── Bottom status bar ─────┬─────┤
-  │     │  ☰ frames · t_accum · scope   │     │
-  └─────┴────────────────────────────────┴─────┘
+The eyepiece optics only clearly show roughly a centered circle inscribed
+in the display — the corners are effectively invisible while looking
+through it. The UI is built around that constraint:
 
-Icons open menus:  ★ → Action   ⚙ → Utilities   ☰ → Controls
+  - Upper-left corner : dim "menu" icon — opens the one consolidated menu
+                         tree for less-common settings (mount/record/camera/
+                         clear images). Always visible but small and
+                         low-contrast; corners are already a "look for it"
+                         zone by design.
+  - Lower-left corner : passive status text, stacked vertically, ordered
+                         so the most-glanced-at line sits nearest the
+                         visible circle and the least essential (e.g.
+                         Pi temperature) sits nearest the true corner.
+                         Deliberately hard to read during a session; the
+                         same info is burned into saved images instead.
+  - Upper-right / lower-right : intentionally blank.
+  - Edges (top/right/bottom/left) : the common-action buttons, sitting on
+    the literal screen edges (not the circle boundary — the circle is a
+    rough visibility guide, not a placement rule). Hidden by default;
+    each edge reveals its buttons when the cursor comes near that edge
+    (proximity auto-reveal, mac-dock style) and hides again after a short
+    idle hold. Every button also has a hover tooltip and reflects state
+    via color (see EDGE_BUTTONS below).
+
+    Top    : Stream/Stack toggle, Play/Pause toggle, Save
+    Right  : Overlay toggle, SkyMap toggle, Quit
+    Bottom : Connect/Disconnect mount (color = connection state)
+    Left   : Display (opens the exposure/brightness/sky-sub slider panel)
 
 Mouse
 -----
 Left-click  : over open menu item → select; off menu → cancel
-Middle-click: no menu → toggle Stack/Stream
+              off menu, near an edge → revealed edge button → its action
+              off menu, upper-left  → menu icon → open the menu tree
+Middle-click: no menu → toggle Stack/Stream (same action as the Top button)
 Right-click : context menu (Slew here / Sync here / SkyMap / Focus / Exit SkyMap)
 Right-hold  : pan image
 Scroll      : zoom
-Hover       : show object name when star overlay is active
+Hover       : show object name when star overlay is active; show tooltip
+              over a revealed edge button
 
 Press Q or Escape to quit.
 """
@@ -36,18 +55,18 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
-import socket
+import math
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import math
 
 import numpy as np
 import pygame
@@ -63,9 +82,9 @@ from digital_eyepiece.gallery_server import GalleryServer
 from astrocore.display.overlay_style import load_overlay_style
 from astrocore.display.skyoverlay import compute_overlay, load_catalog, load_constellation_lines
 from astrocore.display.moon_mapper import (
-    MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog,
+    MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog, moon_radec,
 )
-from astrocore.mount.coord import altaz_to_radec, radec_to_altaz
+from astrocore.mount.coord import altaz_to_radec, angular_separation_deg, radec_to_altaz
 from astrocore.pipeline.stacker import ConstellationStacker, ExposureSequence
 from astrocore.pipeline.streaming import StreamExposure
 from digital_eyepiece.display import stretch_to_uint8, to_surface
@@ -98,17 +117,35 @@ WINDOW_H = 960
 WINDOW_TITLE      = "Digital Eyepiece"
 TARGET_FPS        = 60
 ALERT_DURATION    = 3.0
+SAVE_FLASH_DURATION = 0.6   # seconds the Save button flashes green after a successful save
 
 FOCUS_ROI_HALF = 200
+
+# Automatic Moon-map switch: while Overlay is on, moon feature labels replace
+# the star catalog when the scope is centered on the Moon and it's large
+# enough on screen to be worth labeling.
+MOON_MODE_SEPARATION_DEG   = 0.7    # max scope-to-Moon pointing error
+MOON_MODE_MIN_FOV_FRACTION = 0.33   # min Moon diameter as a fraction of the horizontal FOV
+
+# Edge-button geometry, expressed as fractions of window height so it scales
+# with resolution. Tune EDGE_REVEAL_HOLD / _EDGE_REVEAL_BAND_FRAC against the
+# actual eyepiece optics once you can look through it — these are first-pass
+# defaults, not measured values.
+_EDGE_BTN_FRAC        = 1 / 14   # button size
+_EDGE_BTN_GAP_FRAC    = 1 / 64   # gap between buttons on the same edge
+_EDGE_MARGIN_FRAC     = 1 / 40   # inset of a button cluster from the true screen edge
+_EDGE_REVEAL_BAND_FRAC = 1 / 6   # how close the cursor must get to reveal that edge
+_CORNER_ICON_FRAC     = 1 / 16   # upper-left menu icon size
+EDGE_REVEAL_HOLD      = 0.6      # seconds buttons stay visible after cursor leaves the zone
 
 # Color palette — black background, dim grey UI elements
 BLACK  = (0, 0, 0)
 DIM    = (100, 100, 100)    # borders, inactive icons
 GREY   = (160, 160, 160)    # text and icons
 WHITE  = (210, 210, 210)    # highlighted text
-GREEN  = (0, 200, 0)        # selected menu item
-AMBER  = (200, 160, 0)      # warnings
-RED    = (200, 50, 50)      # recording indicator / alerts
+GREEN  = (0, 200, 0)        # selected menu item / active-state buttons
+AMBER  = (200, 160, 0)      # warnings / in-progress state
+RED    = (200, 50, 50)      # recording indicator / alerts / failed state
 
 # Controls menu values
 _EXPOSURE_STEPS: list[tuple[str, float | None]] = [
@@ -131,6 +168,33 @@ _SKY_STEPS: list[tuple[str, float]] = [
     ("1.5×", 1.5), ("2×",   2.0),
 ]
 
+
+@dataclass
+class EdgeButton:
+    """
+    One proximity-revealed edge button. The main() closure that builds the
+    EDGE_BUTTONS table owns the action/color closures over live app state;
+    this is just the data + rendering contract the render loop and click
+    handler iterate over instead of one-off per-button branches.
+    """
+    key:         str
+    edge:        str    # "top" | "right" | "bottom" | "left"
+    hover_label: Callable[[], str]
+    draw_fn:     Callable[[pygame.Surface, pygame.Rect, tuple], None]
+    color_fn:    Callable[[], tuple]
+    action_fn:   Callable[[], None]
+    rect:        pygame.Rect | None = None   # assigned by _layout_edge_buttons()
+
+
+def _layout_edge_buttons(buttons: list[EdgeButton], w: int, h: int) -> None:
+    """Assign .rect on each button by grouping them per edge and centering each group."""
+    for edge in ("top", "right", "bottom", "left"):
+        group = [b for b in buttons if b.edge == edge]
+        rects = _edge_button_rects(w, h, edge, len(group))
+        for b, r in zip(group, rects):
+            b.rect = r
+
+
 # ---------------------------------------------------------------------------
 # Layout geometry
 # ---------------------------------------------------------------------------
@@ -139,30 +203,57 @@ def _make_layout(w: int, h: int) -> dict:
     """
     Compute all screen regions from window dimensions.
 
-    Status bars are Hd/20 tall and min(Hd,Wd) wide, centered horizontally.
-    Corner squares fill the leftover space at each corner.
+    The image fills the whole window (no carved-out status bars). status_x/
+    status_w describe a centered square sub-region — used only by the menu/
+    controls/context panel helpers below, which predate this layout and are
+    reused unchanged. For the square displays this project targets, that
+    square is the whole window, so this is a no-op in practice; on a
+    non-square window it just keeps panels centered rather than stretched.
     """
-    sh = h // 20
     sw = min(h, w)
-    sx = (w - sw) // 2   # left edge of status bars
-    cw = sx               # corner width (0 when w <= h)
+    sx = (w - sw) // 2
     return dict(
-        status_h  = sh,
-        status_w  = sw,
+        win_w     = w,
+        win_h     = h,
         status_x  = sx,
-        corner_w  = cw,
-        top_bar   = pygame.Rect(sx, 0,      sw, sh),
-        bot_bar   = pygame.Rect(sx, h - sh, sw, sh),
-        central   = pygame.Rect(0,  sh,     w,  h - 2 * sh),
-        corner_tl = pygame.Rect(0,      0,      cw, sh),
-        corner_tr = pygame.Rect(w - cw, 0,      cw, sh),
-        corner_bl = pygame.Rect(0,      h - sh, cw, sh),
-        corner_br = pygame.Rect(w - cw, h - sh, cw, sh),
-        # Icon rects — square tiles at the ends of the status bars
-        icon_star    = pygame.Rect(sx,            0,      sh, sh),
-        icon_gear    = pygame.Rect(sx + sw - sh,  0,      sh, sh),
-        icon_sliders = pygame.Rect(sx,            h - sh, sh, sh),
+        status_w  = sw,
+        central   = pygame.Rect(0, 0, w, h),
+        menu_icon = pygame.Rect(
+            int(h * _EDGE_MARGIN_FRAC), int(h * _EDGE_MARGIN_FRAC),
+            int(h * _CORNER_ICON_FRAC), int(h * _CORNER_ICON_FRAC),
+        ),
     )
+
+
+def _edge_button_rects(w: int, h: int, edge: str, count: int) -> list[pygame.Rect]:
+    """Button rects centered along the given screen edge, inset from the true edge."""
+    if count <= 0:
+        return []
+    size   = int(h * _EDGE_BTN_FRAC)
+    gap    = int(h * _EDGE_BTN_GAP_FRAC)
+    margin = int(h * _EDGE_MARGIN_FRAC)
+    total  = count * size + (count - 1) * gap
+
+    if edge in ("top", "bottom"):
+        start_x = w // 2 - total // 2
+        y = margin if edge == "top" else h - margin - size
+        return [pygame.Rect(start_x + i * (size + gap), y, size, size) for i in range(count)]
+    else:
+        start_y = h // 2 - total // 2
+        x = margin if edge == "left" else w - margin - size
+        return [pygame.Rect(x, start_y + i * (size + gap), size, size) for i in range(count)]
+
+
+def _edge_reveal_zone(w: int, h: int, edge: str) -> pygame.Rect:
+    """Proximity band along the given edge — cursor inside it reveals that edge's buttons."""
+    band = int(h * _EDGE_REVEAL_BAND_FRAC)
+    if edge == "top":
+        return pygame.Rect(0, 0, w, band)
+    if edge == "bottom":
+        return pygame.Rect(0, h - band, w, band)
+    if edge == "left":
+        return pygame.Rect(0, 0, band, h)
+    return pygame.Rect(w - band, 0, band, h)   # right
 
 
 def _image_rect(cam_w: int, cam_h: int, central: pygame.Rect) -> pygame.Rect:
@@ -220,28 +311,18 @@ def _screen_to_sensor_norm(
 # Menu builders
 # ---------------------------------------------------------------------------
 
-def _build_action_menu(
+def _build_main_menu(
     state: ViewState,
-    on_connect,
-    on_disconnect,
     recorder,
-    on_save,
-    on_quit,
+    on_set_dpc,
     mount_driver: str = "",
+    on_clear_images=None,
 ) -> Menu:
-    def _mode_label() -> str:
-        return "Start Streaming" if state.mode == ViewMode.ACCUMULATE else "Start Stacking"
-
-    def _toggle_mode() -> None:
-        state.mode   = ViewMode.ACCUMULATE if state.mode == ViewMode.LIVE else ViewMode.LIVE
-        state.paused = False
-
-    def _pause_label() -> str:
-        return "Resume" if state.paused else "Pause"
-
-    def _toggle_pause() -> None:
-        state.paused = not state.paused
-
+    """
+    The one consolidated menu tree for everything that isn't common enough
+    to earn an edge button. Stream/Stack, Play/Pause, Save, Connect/Disconnect,
+    SkyMap, and Quit all live on edge buttons instead — see EDGE_BUTTONS.
+    """
     def _toggle_record() -> None:
         if recorder is None:
             return
@@ -255,37 +336,12 @@ def _build_action_menu(
     def _record_label() -> str:
         return "Stop Recording" if state.recording else "Record"
 
-    def _connect_label() -> str:
-        if state.mount_connecting:
-            return "Connecting…"
-        return "Disconnect" if state.mount_connected else "Connect"
-
-    def _toggle_connect() -> None:
-        if state.mount_connected:
-            on_disconnect()
-        else:
-            on_connect()
-
     mount_submenu = [
         MenuItem(mount_driver or "no driver configured"),
-        MenuItem(_connect_label, action=_toggle_connect),
-        MenuItem("Park",         action=lambda: None),
+        MenuItem("Park", action=lambda: None),
         MenuItem("Back"),
     ]
 
-    m = Menu()
-    m.add(MenuItem(_mode_label,   action=_toggle_mode))
-    m.add(MenuItem(_pause_label,  action=_toggle_pause))
-    m.add(MenuItem("Mount",       submenu=mount_submenu))
-    m.add(MenuItem(_record_label, action=_toggle_record))
-    m.add(MenuItem("Save",        action=on_save))
-    m.add(MenuItem("Quit",        action=on_quit))
-    return m
-
-
-def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc,
-                          on_clear_images=None, on_moon_mode=None,
-                          moon_mode_label_fn=None) -> Menu:
     bin_items = [
         MenuItem("1×", action=lambda: None),   # TODO: wire to cam.bin
         MenuItem("2×", action=lambda: None),
@@ -305,10 +361,9 @@ def _build_utilities_menu(cam, cam_config_ref: list, on_set_dpc,
     ]
 
     m = Menu()
-    m.add(MenuItem("Camera", submenu=camera_submenu))
-    if on_moon_mode is not None:
-        label_fn = moon_mode_label_fn or (lambda: "Moon Map")
-        m.add(MenuItem(label_fn, action=on_moon_mode))
+    m.add(MenuItem("Mount",       submenu=mount_submenu))
+    m.add(MenuItem(_record_label, action=_toggle_record))
+    m.add(MenuItem("Camera",      submenu=camera_submenu))
     if on_clear_images is not None:
         m.add(MenuItem("Clear Images", action=on_clear_images))
     return m
@@ -356,38 +411,18 @@ def _font(size: int) -> pygame.font.Font:
     return _FONT_CACHE[size]
 
 
-def _draw_icon_star(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
-    """5-pointed star."""
+def _draw_icon_menu(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Three-line 'hamburger' icon — the single consolidated menu tree, upper-left."""
     cx, cy  = rect.centerx, rect.centery
-    r_out   = rect.height * 0.36
-    r_in    = rect.height * 0.15
-    pts = []
-    for i in range(10):
-        angle = math.radians(-90 + i * 36)
-        r = r_out if i % 2 == 0 else r_in
-        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
-    pygame.draw.polygon(surface, color, pts)
-
-
-def _draw_icon_gear(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
-    """Gear with 8 teeth."""
-    cx, cy  = rect.centerx, rect.centery
-    r_body  = int(rect.height * 0.28)
-    r_tooth = int(rect.height * 0.38)
-    r_hole  = int(rect.height * 0.12)
-    pygame.draw.circle(surface, color, (cx, cy), r_body)
-    for i in range(8):
-        angle = math.radians(i * 45)
-        x1 = cx + r_body  * math.cos(angle)
-        y1 = cy + r_body  * math.sin(angle)
-        x2 = cx + r_tooth * math.cos(angle)
-        y2 = cy + r_tooth * math.sin(angle)
-        pygame.draw.line(surface, color, (int(x1), int(y1)), (int(x2), int(y2)), max(3, rect.height // 14))
-    pygame.draw.circle(surface, BLACK, (cx, cy), r_hole)
+    hw      = int(rect.width * 0.30)
+    spacing = int(rect.height * 0.22)
+    for i in range(3):
+        y = cy + (i - 1) * spacing
+        pygame.draw.line(surface, color, (cx - hw, y), (cx + hw, y), max(2, rect.height // 14))
 
 
 def _draw_icon_sliders(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
-    """Three horizontal lines with offset slider handles."""
+    """Three horizontal lines with offset slider handles. Used by the Display edge button."""
     cx, cy   = rect.centerx, rect.centery
     hw       = int(rect.width  * 0.30)   # half-line width
     spacing  = int(rect.height * 0.22)
@@ -401,65 +436,163 @@ def _draw_icon_sliders(surface: pygame.Surface, rect: pygame.Rect, color: tuple)
         pygame.draw.circle(surface, BLACK, (hx, y), r_handle - 2)
 
 
-def _render_status_bars(
+def _draw_icon_stream_stack(surface: pygame.Surface, rect: pygame.Rect, color: tuple,
+                             stacking: bool) -> None:
+    """Broadcast dot with nested arcs (streaming) or three stacked diamonds (stacking)."""
+    cx, cy = rect.centerx, rect.centery
+    lw = max(2, rect.height // 16)
+    if not stacking:
+        r_dot = max(2, int(rect.height * 0.05))
+        pygame.draw.circle(surface, color, (cx, cy), r_dot)
+        for frac in (0.45, 0.80):
+            radius = rect.height * frac * 0.5
+            bbox = pygame.Rect(0, 0, int(radius * 2), int(radius * 2))
+            bbox.center = (cx, cy)
+            pygame.draw.arc(surface, color, bbox, math.radians(-45), math.radians(45), lw)
+            pygame.draw.arc(surface, color, bbox, math.radians(135), math.radians(225), lw)
+    else:
+        hw = rect.width * 0.32
+        hh = rect.height * 0.11
+        spacing = rect.height * 0.20
+        for i in range(3):
+            y = cy + (i - 1) * spacing
+            pts = [(cx, y - hh), (cx + hw, y), (cx, y + hh), (cx - hw, y)]
+            pygame.draw.polygon(surface, color, pts, 2)
+
+
+def _draw_icon_play_pause(surface: pygame.Surface, rect: pygame.Rect, color: tuple,
+                           paused: bool) -> None:
+    """Play triangle when paused (click to resume); pause bars when running (click to pause)."""
+    cx, cy = rect.centerx, rect.centery
+    s = rect.height * 0.32
+    if paused:
+        pts = [(cx - s * 0.5, cy - s), (cx - s * 0.5, cy + s), (cx + s, cy)]
+        pygame.draw.polygon(surface, color, pts)
+    else:
+        bw  = max(3, int(rect.width * 0.14))
+        gap = int(rect.width * 0.12)
+        for sign in (-1, 1):
+            x = cx + sign * gap
+            pygame.draw.rect(surface, color, pygame.Rect(x - bw // 2, int(cy - s), bw, int(2 * s)))
+
+
+def _draw_icon_save(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Downward arrow into a tray — save glyph."""
+    cx, cy = rect.centerx, rect.centery
+    s = rect.height * 0.30
+    pygame.draw.line(surface, color, (cx, cy - s), (cx, cy + s * 0.3), 2)
+    pygame.draw.polygon(surface, color, [
+        (cx - s * 0.5, cy - s * 0.1), (cx + s * 0.5, cy - s * 0.1), (cx, cy + s * 0.5),
+    ])
+    tray_w = s * 1.3
+    pygame.draw.line(surface, color, (cx - tray_w / 2, cy + s), (cx + tray_w / 2, cy + s), 2)
+
+
+def _draw_icon_overlay(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Circle with a crosshair — object-label overlay toggle."""
+    cx, cy = rect.centerx, rect.centery
+    r = rect.height * 0.26
+    pygame.draw.circle(surface, color, (cx, cy), int(r), 2)
+    pygame.draw.line(surface, color, (cx - r * 1.4, cy), (cx - r * 0.5, cy), 2)
+    pygame.draw.line(surface, color, (cx + r * 0.5, cy), (cx + r * 1.4, cy), 2)
+    pygame.draw.line(surface, color, (cx, cy - r * 1.4), (cx, cy - r * 0.5), 2)
+    pygame.draw.line(surface, color, (cx, cy + r * 0.5), (cx, cy + r * 1.4), 2)
+
+
+def _draw_icon_skymap(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Globe glyph — circle with a graticule ellipse — sky map toggle."""
+    cx, cy = rect.centerx, rect.centery
+    r = int(rect.height * 0.28)
+    pygame.draw.circle(surface, color, (cx, cy), r, 2)
+    pygame.draw.ellipse(surface, color, pygame.Rect(cx - r, cy - r // 2, r * 2, r), 2)
+    pygame.draw.line(surface, color, (cx, cy - r), (cx, cy + r), 2)
+
+
+def _draw_icon_quit(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Power symbol — circle with a gap at top, vertical tick through the gap."""
+    cx, cy = rect.centerx, rect.centery
+    r = int(rect.height * 0.26)
+    pygame.draw.circle(surface, color, (cx, cy), r, 2)
+    gap_w = max(3, r // 2)
+    pygame.draw.rect(surface, BLACK, pygame.Rect(cx - gap_w, cy - r - 2, gap_w * 2, r))
+    pygame.draw.line(surface, color, (cx, int(cy - r * 1.1)), (cx, cy), 2)
+
+
+def _draw_icon_mount(surface: pygame.Surface, rect: pygame.Rect, color: tuple) -> None:
+    """Two overlapping rings — connection glyph for mount connect/disconnect."""
+    cx, cy = rect.centerx, rect.centery
+    r   = int(rect.height * 0.18)
+    off = int(r * 0.9)
+    pygame.draw.circle(surface, color, (cx - off, cy), r, 2)
+    pygame.draw.circle(surface, color, (cx + off, cy), r, 2)
+
+
+def _render_menu_icon(surface: pygame.Surface, rect: pygame.Rect, active: bool) -> None:
+    """Always-visible, dim upper-left icon that opens the consolidated menu tree."""
+    color = WHITE if active else GREY
+    _draw_icon_menu(surface, rect, color)
+
+
+def _render_button_tooltip(surface: pygame.Surface, rect: pygame.Rect, text: str, edge: str) -> None:
+    """Hover-text label placed just off the button, toward the visible center."""
+    f = _font(12)
+    label = f.render(text, True, WHITE)
+    lw, lh = label.get_size()
+    pad = 6
+    if edge == "top":
+        x, y = rect.centerx - lw // 2, rect.bottom + pad
+    elif edge == "bottom":
+        x, y = rect.centerx - lw // 2, rect.top - lh - pad
+    elif edge == "left":
+        x, y = rect.right + pad, rect.centery - lh // 2
+    else:  # right
+        x, y = rect.left - lw - pad, rect.centery - lh // 2
+    bg = pygame.Surface((lw + 8, lh + 4), pygame.SRCALPHA)
+    bg.fill((0, 0, 0, 200))
+    surface.blit(bg, (x - 4, y - 2))
+    surface.blit(label, (x, y))
+
+
+def _render_edge_buttons(
     surface: pygame.Surface,
-    layout: dict,
-    state: ViewState,
-    hud_top: str,
-    hud_bot: str,
-    cam_configured: bool,
-    cal_ok: bool,
-    action_active: bool,
-    controls_active: bool,
-    utilities_active: bool,
+    buttons: list["EdgeButton"],
+    edge_reveal: dict[str, float],
+    cursor_pos: tuple[int, int],
 ) -> None:
-    """Draw both status bars and their icons onto surface."""
-    top = layout["top_bar"]
-    bot = layout["bot_bar"]
+    """Draw only the currently-revealed edge buttons, with hover highlight + tooltip."""
+    mx, my = cursor_pos
+    for b in buttons:
+        if edge_reveal.get(b.edge, 0.0) <= 0.0 or b.rect is None:
+            continue
+        hovered = b.rect.collidepoint(mx, my)
+        color = WHITE if hovered else b.color_fn()
+        bg = pygame.Surface(b.rect.size, pygame.SRCALPHA)
+        bg.fill((0, 0, 0, 150))
+        surface.blit(bg, b.rect.topleft)
+        pygame.draw.rect(surface, DIM, b.rect, 1)
+        b.draw_fn(surface, b.rect, color)
+        if hovered:
+            _render_button_tooltip(surface, b.rect, b.hover_label(), b.edge)
 
-    # Bars and corners: black background, dim border
-    for r in (top, bot,
-              layout["corner_tl"], layout["corner_tr"],
-              layout["corner_bl"], layout["corner_br"]):
-        pygame.draw.rect(surface, BLACK, r)
-        pygame.draw.rect(surface, DIM,   r, 1)
 
-    # Icons — bright when their menu is active
-    star_col    = WHITE if action_active   else GREY
-    sliders_col = WHITE if controls_active else GREY
-    gear_col    = WHITE if utilities_active else GREY
+def _render_status_stack(surface: pygame.Surface, win_h: int, lines: list[str]) -> None:
+    """
+    Vertically stacked passive status text, lower-left corner.
 
-    _draw_icon_star   (surface, layout["icon_star"],    star_col)
-    _draw_icon_sliders(surface, layout["icon_sliders"], sliders_col)
-    _draw_icon_gear   (surface, layout["icon_gear"],    gear_col)
-
-    # HUD text in top bar (after the star icon)
-    f = _font(max(9, (layout["status_h"] - 12) // 2))
-    text_x = layout["icon_star"].right + 8
-    text_y = top.y + (top.height - f.get_height()) // 2
-    label = f.render(hud_top, True, GREY)
-    surface.blit(label, (text_x, text_y))
-
-    # Badge area in top bar (before gear icon)
-    badges = []
-    if not cam_configured:
-        badges.append(("Unconfigured", AMBER))
-    if not cal_ok:
-        badges.append(("Uncalibrated", AMBER))
-    if state.recording:
-        badges.append(("● REC", RED))
-    bx = layout["icon_gear"].left - 8
-    for badge_text, badge_col in reversed(badges):
-        bl = f.render(badge_text, True, badge_col)
-        bx -= bl.get_width()
-        surface.blit(bl, (bx, text_y))
-        bx -= 12
-
-    # HUD text in bottom bar (after the sliders icon)
-    text_x = layout["icon_sliders"].right + 8
-    text_y = bot.y + (bot.height - f.get_height()) // 2
-    label = f.render(hud_bot, True, GREY)
-    surface.blit(label, (text_x, text_y))
+    lines[0] is the highest-priority line and is drawn nearest the visible
+    circle; later lines are drawn progressively closer to the (largely
+    invisible) true corner. Deliberately low-contrast — this is glance-if-
+    you-strain info during a session, not a primary control surface.
+    """
+    f = _font(11)
+    pad = 4
+    x = pad
+    y = win_h - pad
+    for line in reversed(lines):
+        label = f.render(line, True, GREY)
+        y -= label.get_height()
+        surface.blit(label, (x, y))
+        y -= pad
 
 
 # --- vertical drop-down panel (Action + Utilities menus) --------------------
@@ -713,7 +846,7 @@ def _render_context_menu(
     ph  = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
     sx, sw = layout["status_x"], layout["status_w"]
     px  = max(sx, min(pos[0], sx + sw - _CTX_W - 4))
-    py  = min(pos[1], layout["bot_bar"].top - ph - 4)
+    py  = min(pos[1], layout["win_h"] - ph - 4)
 
     panel = pygame.Surface((_CTX_W, ph), pygame.SRCALPHA)
     panel.fill((0, 0, 0, 230))
@@ -749,7 +882,7 @@ def _context_hit(
     ph  = len(items) * _CTX_ROW_H + 2 * _CTX_PAD
     sx, sw = layout["status_x"], layout["status_w"]
     px  = max(sx, min(menu_pos[0], sx + sw - _CTX_W - 4))
-    py  = min(menu_pos[1], layout["bot_bar"].top - ph - 4)
+    py  = min(menu_pos[1], layout["win_h"] - ph - 4)
     mx, my = pos
     if not (px <= mx < px + _CTX_W and py <= my < py + ph):
         return None
@@ -869,71 +1002,6 @@ def _draw_cursor(surface: pygame.Surface, x: int, y: int) -> None:
     size = 10
     pygame.draw.line(surface, GREEN, (x - size, y), (x + size, y), 2)
     pygame.draw.line(surface, GREEN, (x, y - size), (x, y + size), 2)
-
-
-def _make_qr_surface(data: str, cell_px: int = 5) -> pygame.Surface | None:
-    """Render a QR code as a pygame Surface. Returns None if qrcode not installed."""
-    try:
-        import qrcode as _qr
-        qr = _qr.QRCode(
-            error_correction=_qr.constants.ERROR_CORRECT_M,
-            box_size=1, border=2,
-        )
-        qr.add_data(data)
-        qr.make(fit=True)
-        matrix = qr.get_matrix()
-    except ImportError:
-        return None
-    n = len(matrix)
-    size = n * cell_px
-    surf = pygame.Surface((size, size))
-    surf.fill((255, 255, 255))
-    for y, row in enumerate(matrix):
-        for x, cell in enumerate(row):
-            if cell:
-                pygame.draw.rect(surf, (0, 0, 0),
-                                 (x * cell_px, y * cell_px, cell_px, cell_px))
-    return surf
-
-
-def _render_qr_overlay(
-    surface: pygame.Surface,
-    qr_surf: pygame.Surface,
-    layout: dict,
-    line1_text: str,
-    line2_text: str,
-    timer: float,
-    total: float,
-) -> None:
-    """Draw the QR code + caption centred in the central region."""
-    central = layout["central"]
-    qs = qr_surf.get_width()
-    padding = 12
-
-    f = _font(11)
-    line1 = f.render(line1_text, True, WHITE)
-    line2 = f.render(line2_text, True, GREY) if line2_text else None
-
-    panel_w = max(qs + 2 * padding, line1.get_width() + 2 * padding)
-    panel_h = (qs + line1.get_height() + 3 * padding
-               + ((line2.get_height() + padding) if line2 else 0))
-
-    px = central.centerx - panel_w // 2
-    py = central.centery - panel_h // 2
-
-    # Fade out in the last second
-    alpha = max(0, int(220 * min(1.0, timer)))
-    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-    panel.fill((0, 0, 0, alpha))
-    surface.blit(panel, (px, py))
-
-    qx = px + (panel_w - qs) // 2
-    qy = py + padding
-    surface.blit(qr_surf, (qx, qy))
-    surface.blit(line1, (px + (panel_w - line1.get_width()) // 2, qy + qs + padding))
-    if line2:
-        surface.blit(line2, (px + (panel_w - line2.get_width()) // 2,
-                              qy + qs + padding + line1.get_height() + 4))
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1136,7 @@ def main() -> None:
     fov_ref:        list[float]        = [30.0]
     mount_holder:   list               = [None]
     _mount_pos:     list               = [None]   # cached (ra_h, dec_deg) from poll thread
+    _mount_connect_failed: list[bool]  = [False]  # drives the mount button's RED state
     _MOUNT_CONNECT_DONE = pygame.event.custom_type()
     overlay_style = load_overlay_style(
         _OVERLAY_STYLE_PATH,
@@ -1076,17 +1145,16 @@ def main() -> None:
 
     def _open_menu(name: str) -> None:
         state.active_menu = name
-        state.menu_open   = True
 
     def _close_menu() -> None:
         state.active_menu = None
-        state.menu_open   = False
-        action_menu.reset()
-        utilities_menu.reset()
+        main_menu.reset()
         if context_menu_ref[0] is not None:
             context_menu_ref[0].reset()
 
     def _connect_mount() -> None:
+        nonlocal alert_timer, alert_message
+        _mount_connect_failed[0] = False
         if args.vmount:
             from astrocore.mount.virtual_mount import VirtualMount
             mount_holder[0] = VirtualMount(lat_deg=lat, lon_deg=lon)
@@ -1095,6 +1163,11 @@ def main() -> None:
             return
         driver = config.mount_driver if config else ""
         if not driver:
+            # Previously a silent no-op — now surfaced the same way any other
+            # connect failure is, instead of doing nothing with no feedback.
+            _mount_connect_failed[0] = True
+            alert_message = "No mount driver configured"
+            alert_timer   = ALERT_DURATION
             return
         state.mount_connecting = True
 
@@ -1124,6 +1197,7 @@ def main() -> None:
             mount_holder[0].disconnect()
             mount_holder[0] = None
         _mount_pos[0] = None
+        _mount_connect_failed[0] = False
         state.mount_connected  = False
         state.mount_tracking   = False
         state.mount_connecting = False
@@ -1239,33 +1313,11 @@ def main() -> None:
             image_path.mkdir(parents=True, exist_ok=True)
             GalleryServer(image_path, port=hotspot.port).start()
 
-        # QR surface — WiFi join QR on Pi; gallery URL QR on Mac/Windows
         _is_pi = sys.platform == "linux"
 
-        def _get_local_ip() -> str:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.connect(("8.8.8.8", 80))
-                    return _s.getsockname()[0]
-            except Exception:
-                return "localhost"
-
-        if _is_pi:
-            _qr_data  = hotspot.wifi_qr_data
-            _qr_line1 = f"Join WiFi: {hotspot.ssid}  •  pw: {hotspot.password}"
-            _qr_line2 = f"Then open: {hotspot.gallery_url}"
-        else:
-            _local_ip    = _get_local_ip()
-            _gallery_url = f"http://{_local_ip}:{hotspot.port}"
-            _qr_data  = _gallery_url
-            _qr_line1 = f"Gallery: {_gallery_url}"
-            _qr_line2 = ""
-
-        _qr_surf: pygame.Surface | None = _make_qr_surface(_qr_data)
-        _qr_timer: list[float] = [0.0]   # seconds remaining for QR overlay
-        _QR_DURATION = 4.0
         _save_frame_ref:    list[np.ndarray | None] = [None]   # latest displayed uint8 frame
         _hotspot_started:   list[bool]             = [False]  # guest hotspot launched this session
+        _save_flash_timer:  list[float]            = [0.0]    # Save button green-flash countdown
 
         if _is_pi:
             # Script writes its own trace to /tmp/astro-hotspot-start.log.
@@ -1360,7 +1412,7 @@ def main() -> None:
             path = image_path / f"{ts}.jpg"
             cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
             logging.info("Saved %s", path)
-            _qr_timer[0] = _QR_DURATION
+            _save_flash_timer[0] = SAVE_FLASH_DURATION
             if _is_pi:
                 if not _hotspot_started[0]:
                     subprocess.Popen(["sudo", "/usr/local/bin/astro-hotspot-start"])
@@ -1387,32 +1439,17 @@ def main() -> None:
         def _on_quit() -> None:
             pygame.event.post(pygame.event.Event(pygame.QUIT))
 
-        action_menu = _build_action_menu(
-            state,
-            on_connect    = _connect_mount,
-            on_disconnect = _disconnect_mount,
-            recorder      = recorder,
-            on_save       = _on_save,
-            on_quit       = _on_quit,
+        main_menu = _build_main_menu(
+            state, recorder, _on_set_dpc,
             mount_driver  = ("Virtual mount" if args.vmount
                              else config.mount_driver if config else ""),
-        )
-
-        def _on_moon_mode() -> None:
-            state.moon_mode = not state.moon_mode
-            _close_menu()
-
-        utilities_menu = _build_utilities_menu(
-            cam, cam_config_ref, _on_set_dpc,
             on_clear_images  = _on_clear_images,
-            on_moon_mode     = _on_moon_mode,
-            moon_mode_label_fn = lambda: "Moon Map [ON]" if state.moon_mode else "Moon Map",
         )
 
         context_menu_ref: list[Menu | None] = [None]
 
         dispatcher = InputDispatcher(
-            state, action_menu,
+            state, main_menu,
             zoom_step       = 1.2,
             zoom_min        = 1.0,
             zoom_max        = config.max_zoom         if config else 5.0,
@@ -1430,6 +1467,114 @@ def main() -> None:
         cam_h_ref: list[int] = [cam.info.sensor_height_px or win_h]
         img_rect   = _image_rect(cam_w_ref[0], cam_h_ref[0], layout["central"])
         dispatcher.set_img_rect(img_rect)
+
+        # -- SkyMap toggle — hoisted out of the right-click handler so the SkyMap
+        # edge button can call the same logic; behavior is unchanged from before. --
+        def _enter_sky_map() -> None:
+            state.all_sky_mode   = True
+            state.overlay_active = True
+            state.sky_map_fov    = (config.sky_map.fov_default if config else 20.0)
+            state.zoom_center_x  = 0.5
+            state.zoom_center_y  = 0.5
+            state.sky_map_cam_fov_h = fov_ref[0]
+            cw = cam_w_ref[0] if cam_w_ref[0] > 0 else 1
+            ch = cam_h_ref[0] if cam_h_ref[0] > 0 else 1
+            state.sky_map_cam_fov_v = fov_ref[0] * ch / cw
+            _close_menu()
+
+        def _exit_sky_map() -> None:
+            state.all_sky_mode      = False
+            state.overlay_active    = False
+            state.zoom_center_x     = 0.5
+            state.zoom_center_y     = 0.5
+            state.sky_map_cam_fov_h = None
+            state.sky_map_cam_fov_v = None
+            _close_menu()
+
+        def _toggle_sky_map() -> None:
+            if state.all_sky_mode:
+                _exit_sky_map()
+            else:
+                _enter_sky_map()
+
+        # -- Edge-button actions/colors ------------------------------------------
+
+        def _toggle_stream_stack() -> None:
+            state.mode = ViewMode.LIVE if state.mode == ViewMode.ACCUMULATE else ViewMode.ACCUMULATE
+
+        def _toggle_play_pause() -> None:
+            state.paused = not state.paused
+
+        def _toggle_overlay_button() -> None:
+            if state.overlay_active:
+                state.overlay_active = False
+            else:
+                dispatcher.show_overlay()
+
+        def _toggle_display_panel() -> None:
+            if state.active_menu == "controls":
+                _close_menu()
+            else:
+                _open_menu("controls")
+
+        def _toggle_mount_connect() -> None:
+            if state.mount_connected:
+                _disconnect_mount()
+            else:
+                _connect_mount()
+
+        def _mount_button_color() -> tuple:
+            if state.mount_connecting:
+                return AMBER
+            if _mount_connect_failed[0]:
+                return RED
+            if state.mount_connected:
+                return GREEN
+            return GREY
+
+        EDGE_BUTTONS: list[EdgeButton] = [
+            EdgeButton("stream_stack", "top",
+                       lambda: "Stream/Stack",
+                       lambda s, r, c: _draw_icon_stream_stack(s, r, c, state.mode == ViewMode.ACCUMULATE),
+                       lambda: GREEN if state.mode == ViewMode.ACCUMULATE else GREY,
+                       _toggle_stream_stack),
+            EdgeButton("play_pause", "top",
+                       lambda: "Play/Pause",
+                       lambda s, r, c: _draw_icon_play_pause(s, r, c, state.paused),
+                       lambda: AMBER if state.paused else GREY,
+                       _toggle_play_pause),
+            EdgeButton("save", "top",
+                       lambda: "Save",
+                       _draw_icon_save,
+                       lambda: GREEN if _save_flash_timer[0] > 0 else GREY,
+                       _on_save),
+            EdgeButton("overlay", "right",
+                       lambda: "Overlay",
+                       _draw_icon_overlay,
+                       lambda: GREEN if state.overlay_active else GREY,
+                       _toggle_overlay_button),
+            EdgeButton("skymap", "right",
+                       lambda: "SkyMap",
+                       _draw_icon_skymap,
+                       lambda: GREEN if state.all_sky_mode else GREY,
+                       _toggle_sky_map),
+            EdgeButton("quit", "right",
+                       lambda: "Quit",
+                       _draw_icon_quit,
+                       lambda: GREY,
+                       _on_quit),
+            EdgeButton("mount_connect", "bottom",
+                       lambda: "Disconnect Mount" if state.mount_connected else "Connect Mount",
+                       _draw_icon_mount,
+                       _mount_button_color,
+                       _toggle_mount_connect),
+            EdgeButton("display", "left",
+                       lambda: "Display",
+                       _draw_icon_sliders,
+                       lambda: GREEN if state.active_menu == "controls" else GREY,
+                       _toggle_display_panel),
+        ]
+        _layout_edge_buttons(EDGE_BUTTONS, win_w, win_h)
 
         # Single-slot "latest frame" handoff between the grab worker and the render
         # loop. A FIFO queue would let stale frames pile up when rendering falls
@@ -1548,12 +1693,30 @@ def main() -> None:
         _ov_surf: pygame.Surface | None = None
         _ov_key:  tuple                 = ()
 
+        # Proximity auto-reveal: seconds remaining visible, per edge, decremented
+        # every frame and refreshed to EDGE_REVEAL_HOLD when the cursor is inside
+        # that edge's reveal zone (see _edge_reveal_zone). Zones are fixed for the
+        # life of the window since it isn't resizable at runtime.
+        _edge_reveal: dict[str, float] = {"top": 0.0, "right": 0.0, "bottom": 0.0, "left": 0.0}
+        _edge_reveal_zones = {
+            edge: _edge_reveal_zone(win_w, win_h, edge)
+            for edge in ("top", "right", "bottom", "left")
+        }
+
         running = True
         while running:
             dt = clock.tick(TARGET_FPS) / 1000.0
             dispatcher.update(dt)
             if alert_timer > 0:
                 alert_timer -= dt
+            if _save_flash_timer[0] > 0:
+                _save_flash_timer[0] = max(0.0, _save_flash_timer[0] - dt)
+
+            for _edge, _zone in _edge_reveal_zones.items():
+                if _edge_reveal[_edge] > 0:
+                    _edge_reveal[_edge] = max(0.0, _edge_reveal[_edge] - dt)
+                if _zone.collidepoint(cursor_pos):
+                    _edge_reveal[_edge] = EDGE_REVEAL_HOLD
 
             # -- events -------------------------------------------------------
             for event in pygame.event.get():
@@ -1564,10 +1727,14 @@ def main() -> None:
                     state.mount_connecting = False
                     if event.error:
                         logging.warning("Mount connect failed: %s", event.error)
+                        _mount_connect_failed[0] = True
+                        alert_message = f"Mount connect failed: {event.error}"
+                        alert_timer   = ALERT_DURATION
                     else:
                         mount_holder[0] = event.mount
                         state.mount_connected = True
                         state.mount_tracking  = event.tracking
+                        _mount_connect_failed[0] = False
                         if not event.tracking:
                             logging.info("Mount connected but not tracking — overlay will use north horizon")
 
@@ -1605,20 +1772,11 @@ def main() -> None:
                         # --- Left-click routing ---
                         active = state.active_menu
 
-                        if active == "action":
-                            idx = _vertical_menu_hit(event.pos, action_menu, "left", layout)
+                        if active == "menu":
+                            idx = _vertical_menu_hit(event.pos, main_menu, "left", layout)
                             if idx is not None:
-                                action_menu.set_selection(idx)
-                                if action_menu.select():
-                                    _close_menu()
-                            else:
-                                _close_menu()
-
-                        elif active == "utilities":
-                            idx = _vertical_menu_hit(event.pos, utilities_menu, "right", layout)
-                            if idx is not None:
-                                utilities_menu.set_selection(idx)
-                                if utilities_menu.select():
+                                main_menu.set_selection(idx)
+                                if main_menu.select():
                                     _close_menu()
                             else:
                                 _close_menu()
@@ -1647,15 +1805,16 @@ def main() -> None:
                                 _close_menu()
 
                         else:
-                            # No menu open — check icon hits
-                            if layout["icon_star"].collidepoint(mx, my):
-                                action_menu.reset()
-                                _open_menu("action")
-                            elif layout["icon_gear"].collidepoint(mx, my):
-                                utilities_menu.reset()
-                                _open_menu("utilities")
-                            elif layout["icon_sliders"].collidepoint(mx, my):
-                                _open_menu("controls")
+                            # No menu open — check the menu icon, then revealed edge buttons
+                            if layout["menu_icon"].collidepoint(mx, my):
+                                main_menu.reset()
+                                _open_menu("menu")
+                            else:
+                                for _btn in EDGE_BUTTONS:
+                                    if (_edge_reveal[_btn.edge] > 0 and _btn.rect is not None
+                                            and _btn.rect.collidepoint(mx, my)):
+                                        _btn.action_fn()
+                                        break
 
                     elif event.button == 2 and not state.active_menu:
                         # --- Middle-click: toggle Stream / Stack ---
@@ -1738,28 +1897,8 @@ def main() -> None:
                                     alert_message = f"Sync failed: {exc}"
                                 alert_timer = ALERT_DURATION
 
-                            def _enter_sky_map() -> None:
-                                state.all_sky_mode   = True
-                                state.overlay_active = True
-                                state.sky_map_fov    = (config.sky_map.fov_default
-                                                        if config else 20.0)
-                                state.zoom_center_x  = 0.5
-                                state.zoom_center_y  = 0.5
-                                # Snapshot the active camera's FOV for the FOV box
-                                state.sky_map_cam_fov_h = fov_ref[0]
-                                cw = cam_w_ref[0] if cam_w_ref[0] > 0 else 1
-                                ch = cam_h_ref[0] if cam_h_ref[0] > 0 else 1
-                                state.sky_map_cam_fov_v = fov_ref[0] * ch / cw
-                                _close_menu()
-
-                            def _exit_sky_map() -> None:
-                                state.all_sky_mode      = False
-                                state.overlay_active    = False
-                                state.zoom_center_x     = 0.5
-                                state.zoom_center_y     = 0.5
-                                state.sky_map_cam_fov_h = None
-                                state.sky_map_cam_fov_v = None
-                                _close_menu()
+                            # _enter_sky_map / _exit_sky_map are defined once, outer
+                            # scope, above — also used by the SkyMap edge button.
 
                             _all_configs: list[tuple[str, int]] = []
                             if config:
@@ -1805,12 +1944,8 @@ def main() -> None:
                     if state.focus_state == FocusState.OFF:
                         if state.active_menu in (None, "controls"):
                             dispatcher.on_scroll(event.y, cursor_pos)   # zoom
-                        else:
-                            # Scroll navigates action / utilities menus
-                            if state.active_menu == "action":
-                                action_menu.scroll(-event.y)
-                            elif state.active_menu == "utilities":
-                                utilities_menu.scroll(-event.y)
+                        elif state.active_menu == "menu":
+                            main_menu.scroll(-event.y)
 
             # -- mode change --------------------------------------------------
             if state.mode != prev_mode:
@@ -1928,6 +2063,21 @@ def main() -> None:
                 cy = layout["central"].centery - label.get_height() // 2
                 screen.blit(label, (cx, cy))
 
+            # Auto-enable Moon mode: Overlay on, scope centered on the Moon,
+            # and the Moon large enough on screen to be worth labeling.
+            if (state.overlay_active and not state.all_sky_mode
+                    and mount_holder[0] is not None and _mount_pos[0] is not None):
+                ra_h, dec_deg = _mount_pos[0]
+                scope_alt, scope_az = radec_to_altaz(ra_h, dec_deg, lat, lon)
+                moon_ra_h, moon_dec_deg = moon_radec()
+                moon_alt, moon_az = radec_to_altaz(moon_ra_h, moon_dec_deg, lat, lon)
+                sep = angular_separation_deg(scope_alt, scope_az, moon_alt, moon_az)
+                moon_fov_fraction = (2 * MOON_ANGULAR_RADIUS_DEG) / (fov_ref[0] / state.zoom_level)
+                state.moon_mode = (sep <= MOON_MODE_SEPARATION_DEG
+                                    and moon_fov_fraction >= MOON_MODE_MIN_FOV_FRACTION)
+            else:
+                state.moon_mode = False
+
             # Sky / Moon overlay
             if state.overlay_active:
                 # Build a cache key from all overlay inputs.
@@ -2038,10 +2188,8 @@ def main() -> None:
                 _render_hover_label(screen, ov_table, *cursor_pos, img_rect=img_rect)
 
             # Menus
-            if state.active_menu == "action":
-                _render_vertical_menu(screen, action_menu, "left", layout, cursor_pos)
-            elif state.active_menu == "utilities":
-                _render_vertical_menu(screen, utilities_menu, "right", layout, cursor_pos)
+            if state.active_menu == "menu":
+                _render_vertical_menu(screen, main_menu, "left", layout, cursor_pos)
             elif state.active_menu == "controls":
                 _render_controls_menu(screen, layout, state, cursor_pos)
             elif state.active_menu == "context" and context_menu_ref[0] is not None:
@@ -2049,58 +2197,45 @@ def main() -> None:
                                      state.context_menu_pos, cursor_pos,
                                      layout)
 
-            # QR overlay (shown after Save)
-            if _qr_timer[0] > 0:
-                _qr_timer[0] -= dt
-                if _qr_surf is not None:
-                    _render_qr_overlay(screen, _qr_surf, layout,
-                                       _qr_line1, _qr_line2,
-                                       _qr_timer[0], _QR_DURATION)
-
             # Alert overlay
             if alert_timer > 0:
                 _render_alert(screen, alert_message, win_w, win_h)
 
-            # Status bars (drawn last so they sit on top)
-            _temp_suffix = (
-                f"  temp={_pi_temp_c[0]:.0f}°C" if _pi_temp_c[0] is not None else ""
-            )
-            if state.focus_state == FocusState.ACTIVE:
-                hud_top = (
-                    f"FOCUS  exp={ae.current:.4g}s  fps={fps_display:.1f}"
-                    f"  — click or any key to exit"
-                )
-                hud_bot = _temp_suffix.strip()
-            elif state.mode == ViewMode.ACCUMULATE:
-                hud_top = (
-                    f"Stacking  exp={stack_seq.current:.4g}s  t={stacker.t_accum:.1f}s"
-                )
-                hud_bot = (
-                    f"frames={stacker.frame_count}  skipped={stacker.skipped_count}  "
-                    f"{cam_config_ref[0].telescope_description}  "
-                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
-                    f"{_temp_suffix}"
-                )
-            else:
-                hud_top = (
-                    f"Streaming  exp={ae.current:.4g}s  fps={fps_display:.1f}"
-                )
-                hud_bot = (
-                    f"frames={frame_count}  skipped=0  "
-                    f"{cam_config_ref[0].telescope_description}  "
-                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°"
-                    f"{_temp_suffix}"
-                )
+            # -- lower-left status stack (drawn last, low-contrast, easy to ignore) --
+            status_lines: list[str] = []
+            if state.recording:
+                status_lines.append("● REC")
+            if not _cam_configured:
+                status_lines.append("Unconfigured")
+            if not _cal_ok:
+                status_lines.append("Uncalibrated")
 
-            _render_status_bars(
-                screen, layout, state,
-                hud_top, hud_bot,
-                cam_configured = _cam_configured,
-                cal_ok         = _cal_ok,
-                action_active    = state.active_menu == "action",
-                controls_active  = state.active_menu == "controls",
-                utilities_active = state.active_menu == "utilities",
-            )
+            if state.focus_state == FocusState.ACTIVE:
+                status_lines.append(f"exp={ae.current:.4g}s")
+                status_lines.append(f"fps={fps_display:.1f}")
+            elif state.mode == ViewMode.ACCUMULATE:
+                status_lines += [
+                    f"exp={stack_seq.current:.4g}s",
+                    f"t={stacker.t_accum:.1f}s",
+                    f"frames={stacker.frame_count} skipped={stacker.skipped_count}",
+                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°",
+                    cam_config_ref[0].telescope_description,
+                ]
+            else:
+                status_lines += [
+                    f"exp={ae.current:.4g}s",
+                    f"fps={fps_display:.1f}",
+                    f"frames={frame_count}",
+                    f"hfov={fov_ref[0] / state.zoom_level:.1f}°",
+                    cam_config_ref[0].telescope_description,
+                ]
+            if _pi_temp_c[0] is not None:
+                status_lines.append(f"temp={_pi_temp_c[0]:.0f}°C")
+
+            _render_status_stack(screen, win_h, status_lines)
+            _render_menu_icon(screen, layout["menu_icon"], active=state.active_menu == "menu")
+            if not state.active_menu:
+                _render_edge_buttons(screen, EDGE_BUTTONS, _edge_reveal, cursor_pos)
 
             cursor_visible = (
                 state.active_menu is not None

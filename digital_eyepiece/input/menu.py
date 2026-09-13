@@ -2,7 +2,7 @@
 Menu — a scroll-navigated, click-selected hierarchical menu.
 
 The menu is always instantiated; visibility is controlled by
-ViewState.menu_open. Items are added at startup based on which hardware
+ViewState.active_menu. Items are added at startup based on which hardware
 is connected. Submenus are entered by selecting a parent item and exited
 by selecting 'Back' or calling back() programmatically.
 

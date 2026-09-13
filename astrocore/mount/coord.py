@@ -98,6 +98,22 @@ def altaz_to_radec(
     return ra_deg / 15.0, math.degrees(dec)
 
 
+def angular_separation_deg(
+    alt1_deg: float, az1_deg: float,
+    alt2_deg: float, az2_deg: float,
+) -> float:
+    """
+    Great-circle angular separation between two horizontal-coordinate points.
+
+    Works for any (lat-like, lon-like) pair, so it's equally valid for
+    RA/Dec — pass (dec, ra*15) instead of (alt, az).
+    """
+    a1, a2 = math.radians(alt1_deg), math.radians(alt2_deg)
+    daz = math.radians(az1_deg - az2_deg)
+    cos_sep = math.sin(a1) * math.sin(a2) + math.cos(a1) * math.cos(a2) * math.cos(daz)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+
+
 # ── internal helpers ──────────────────────────────────────────────────────────
 
 def _jd(t: datetime) -> float:

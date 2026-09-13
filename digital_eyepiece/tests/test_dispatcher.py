@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from digital_eyepiece.input.dispatcher import InputDispatcher, ScrollContext, OVERLAY_DURATION
 from digital_eyepiece.input.menu import Menu, MenuItem
-from digital_eyepiece.view_state import ViewMode, ViewState
+from digital_eyepiece.view_state import ViewState
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ class TestContext:
         assert dispatcher._context() == ScrollContext.IMAGE
 
     def test_menu_context_when_open(self, dispatcher, state):
-        state.menu_open = True
+        state.active_menu = "menu"
         assert dispatcher._context() == ScrollContext.MENU
 
     def test_overlay_context_when_active(self, dispatcher, state):
@@ -50,7 +50,7 @@ class TestContext:
         assert dispatcher._context() == ScrollContext.OVERLAY
 
     def test_menu_takes_priority_over_overlay(self, dispatcher, state):
-        state.menu_open = True
+        state.active_menu = "menu"
         state.overlay_active = True
         assert dispatcher._context() == ScrollContext.MENU
 
@@ -100,12 +100,12 @@ class TestScrollImageZoom:
 
 class TestScrollMenu:
     def test_scroll_navigates_menu(self, dispatcher, state, menu):
-        state.menu_open = True
+        state.active_menu = "menu"
         dispatcher.on_scroll(1)
         assert menu.selection_index == 1
 
     def test_scroll_does_not_change_zoom_when_menu_open(self, dispatcher, state):
-        state.menu_open = True
+        state.active_menu = "menu"
         dispatcher.on_scroll(1)
         assert state.zoom_level == pytest.approx(1.0)
 
@@ -148,71 +148,7 @@ class TestScrollOverlay:
     def test_overlay_scroll_does_not_affect_menu(self, dispatcher, state):
         state.overlay_active = True
         dispatcher.on_scroll(-1)
-        assert state.menu_open is False
-
-
-# ---------------------------------------------------------------------------
-# Left-click
-# ---------------------------------------------------------------------------
-
-class TestLeftClick:
-    def test_left_click_toggles_to_accumulate(self, dispatcher, state):
-        dispatcher.on_left_click()
-        assert state.mode == ViewMode.ACCUMULATE
-
-    def test_left_click_toggles_back_to_live(self, dispatcher, state):
-        state.mode = ViewMode.ACCUMULATE
-        dispatcher.on_left_click()
-        assert state.mode == ViewMode.LIVE
-
-    def test_left_click_does_not_open_menu(self, dispatcher, state):
-        dispatcher.on_left_click()
-        assert state.menu_open is False
-
-    def test_left_click_selects_and_closes_on_leaf(self, dispatcher, state):
-        state.menu_open = True
-        dispatcher.on_left_click()   # selects "Cancel" (no-op, closes)
-        assert state.menu_open is False
-
-    def test_left_click_enters_submenu_stays_open(self, dispatcher, state, menu):
-        sub = [MenuItem("1×", action=lambda: None)]
-        menu.add(MenuItem("Brightness", submenu=sub))
-        menu.scroll(2)
-        state.menu_open = True
-        dispatcher.on_left_click()
-        assert state.menu_open is True
-
-
-# ---------------------------------------------------------------------------
-# Right-click
-# ---------------------------------------------------------------------------
-
-class TestRightClick:
-    def test_right_click_opens_menu_when_closed(self, dispatcher, state):
-        dispatcher.on_right_click()
-        assert state.menu_open is True
-
-    def test_right_click_resets_menu_to_root_on_open(self, dispatcher, state, menu):
-        menu.scroll(1)              # move to "Save"
-        dispatcher.on_right_click()
-        assert menu.selection_index == 0
-
-    def test_right_click_closes_menu_when_open(self, dispatcher, state):
-        state.menu_open = True
-        dispatcher.on_right_click()
-        assert state.menu_open is False
-
-    def test_right_click_in_all_sky_opens_menu(self, dispatcher, state):
-        # Right-click in sky map mode no longer exits immediately —
-        # the context menu (handled by main.py) gives the user the choice.
-        state.all_sky_mode = True
-        state.overlay_active = True
-        state.menu_open = False
-        dispatcher.on_right_click()
-        # Dispatcher leaves all_sky_mode untouched; caller opens context menu
-        assert state.all_sky_mode is True
-        assert state.menu_open is True
-
+        assert state.active_menu is None
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +172,7 @@ class TestMouseMove:
 
     def test_mouse_move_no_effect_when_menu_open(self, dispatcher, state):
         state.mount_connected = True
-        state.menu_open = True
+        state.active_menu = "menu"
         dispatcher.on_mouse_move(100, 200)
         assert state.overlay_active is False
 
@@ -261,7 +197,7 @@ class TestUpdate:
 
     def test_update_no_effect_when_menu_open(self, dispatcher, state):
         state.overlay_active = True
-        state.menu_open = True
+        state.active_menu = "menu"
         dispatcher._overlay_timer = 0.1
         dispatcher.update(1.0)
         assert state.overlay_active is True
@@ -272,27 +208,6 @@ class TestUpdate:
         dispatcher._overlay_timer = 0.1
         dispatcher.update(1.0)
         assert state.overlay_active is True
-
-
-# ---------------------------------------------------------------------------
-# Back button
-# ---------------------------------------------------------------------------
-
-class TestBack:
-    def test_back_closes_menu_at_root(self, dispatcher, state):
-        state.menu_open = True
-        dispatcher.on_back()
-        assert state.menu_open is False
-
-    def test_back_exits_submenu_keeps_menu_open(self, dispatcher, state, menu):
-        sub = [MenuItem("A")]
-        menu.add(MenuItem("Parent", submenu=sub))
-        menu.scroll(2)
-        state.menu_open = True
-        dispatcher.on_left_click()   # enter submenu
-        assert state.menu_open is True
-        dispatcher.on_back()         # exit submenu
-        assert state.menu_open is True
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +407,7 @@ class TestRightDragPan:
         rect = _FakeRect(0, 0, 800, 600)
         d = self._make_dispatcher_with_rect(state, menu, rect)
         state.zoom_level = 2.0
-        state.menu_open = True
+        state.active_menu = "menu"
         d.on_right_button_down(400, 300)
         d.on_mouse_move(450, 300, right_held=True)
         assert state.zoom_center_x == pytest.approx(0.5)

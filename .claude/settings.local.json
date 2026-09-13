@@ -26,7 +26,15 @@
       "Read(//opt/homebrew/bin/**)",
       "Bash(/usr/bin/python3 *)",
       "Bash(awk -F: '{print $1\": \"$0}')",
-      "Bash(bash -n utilities/setup_hotspot.sh)"
+      "Bash(bash -n utilities/setup_hotspot.sh)",
+      "Bash(sort -u -t: -k2)",
+      "Read(//private/tmp/**)",
+      "Bash(jobs -l)",
+      "Bash(nohup .venv/bin/python -m digital_eyepiece.main --windowed --window-size 700x700 --vmount)",
+      "Bash(disown)",
+      "Read(//tmp/**)",
+      "Bash(git -C /Users/jasonhome/Documents/repos/impatient-astronomy-instrumentation stash)",
+      "Bash(git -C /Users/jasonhome/Documents/repos/impatient-astronomy-instrumentation stash pop)"
     ]
   }
 }

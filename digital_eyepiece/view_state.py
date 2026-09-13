@@ -45,7 +45,7 @@ class ViewState:
     Menus
     -----
     active_menu names which panel is open: 'action', 'controls', 'utilities',
-    'context', or None. menu_open is kept for dispatcher/test compatibility.
+    'context', or None.
     """
     mode: ViewMode = ViewMode.LIVE
     zoom_level: float = 1.0
@@ -57,10 +57,9 @@ class ViewState:
     stack_exposure: float | None = None   # None = STACKING_SEQUENCE ramp
     active_camera_index: int = 0
     active_menu: str | None = None      # 'action' | 'controls' | 'utilities' | 'context' | None
-    menu_open: bool = False             # kept for dispatcher / test compatibility
     overlay_active: bool = False
     sky_map_fov: float = 20.0       # active FOV (degrees) while in all_sky_mode
-    moon_mode: bool = False         # True = moon feature overlay instead of sky catalog
+    moon_mode: bool = False         # auto-set each frame: moon feature overlay instead of sky catalog
     mount_connected:  bool = False
     mount_tracking:   bool = False   # True only after connect confirms tracking or sync
     mount_connecting: bool = False   # True while async connect is in progress

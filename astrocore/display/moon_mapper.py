@@ -9,6 +9,7 @@ Public API
 ----------
 load_moon_catalog(path)       -- load moon_features.csv → list[MoonFeature]
 moon_libration(t)             -- (l', b', P) in degrees
+moon_radec(t)                 -- geocentric apparent (ra_hours, dec_deg)
 compute_moon_overlay(...)     -- RGBA overlay + feature table
 """
 
@@ -216,6 +217,36 @@ def moon_libration(t: datetime | None = None) -> tuple[float, float, float]:
     position_angle = math.degrees(chi)
 
     return l_prime, b_prime, position_angle
+
+
+def moon_radec(t: datetime | None = None) -> tuple[float, float]:
+    """
+    Geocentric apparent Moon RA/Dec (hours, degrees).
+
+    Uses the same truncated Ch.47 series as moon_libration() (~0.2° accuracy).
+    Not corrected for parallax (up to ~1° near the horizon) — fine for
+    coarse "is the scope pointed at the Moon" checks, not for slewing.
+    """
+    if t is None:
+        t = datetime.now(tz=timezone.utc)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+
+    T = (_jd(t) - 2451545.0) / 36525.0
+    lam_deg, beta_deg = _moon_ecliptic(T)
+    lam  = math.radians(lam_deg)
+    beta = math.radians(beta_deg)
+    eps  = math.radians(23.439291 - 0.013004 * T)
+
+    ra = math.atan2(
+        math.sin(lam) * math.cos(eps) - math.tan(beta) * math.sin(eps),
+        math.cos(lam),
+    )
+    dec = math.asin(
+        math.sin(beta) * math.cos(eps) + math.cos(beta) * math.sin(eps) * math.sin(lam)
+    )
+    ra_deg = math.degrees(ra) % 360.0
+    return ra_deg / 15.0, math.degrees(dec)
 
 
 # ---------------------------------------------------------------------------

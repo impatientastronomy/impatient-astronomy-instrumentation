@@ -265,11 +265,11 @@ def _put_pixel(img: np.ndarray, cx: int, cy: int,
 
 
 def _draw_ring(img: np.ndarray, cx: int, cy: int, radius: int,
-               color: tuple[int, int, int, int]) -> None:
-    """Draw a thin circle outline, clipping to bounds."""
+               color: tuple[int, int, int, int], thickness: int = 2) -> None:
+    """Draw a circle outline of the given pixel thickness, clipping to bounds."""
     h, w = img.shape[:2]
     r2_outer = radius * radius
-    r2_inner = (radius - 1) * (radius - 1)
+    r2_inner = max(radius - thickness, 0) ** 2
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             d2 = dx * dx + dy * dy
@@ -286,6 +286,9 @@ def _draw_ring(img: np.ndarray, cx: int, cy: int, radius: int,
 #: Mean angular radius of the Moon in degrees (used to compute disk size from FOV)
 MOON_ANGULAR_RADIUS_DEG = 0.259
 
+#: Mean physical radius of the Moon in km (used for the on-screen distance scale)
+MOON_RADIUS_KM = 1737.4
+
 
 def compute_moon_overlay(
     features: Sequence[MoonFeature],
@@ -297,6 +300,8 @@ def compute_moon_overlay(
     north_angle_deg: float = 0.0,       # degrees CW from image-up to celestial north
     min_diameter_km: float = 0.0,       # skip features smaller than this
     limb_fraction: float = 0.93,        # hide features within this fractional radius of limb
+    show_limb: bool = True,             # draw the Moon's disk perimeter as a circle
+    limb_color: tuple[int, int, int, int] = (255, 255, 255, 160),
 ) -> tuple[np.ndarray, list[dict]]:
     """
     Build an RGBA moon feature overlay.
@@ -312,6 +317,8 @@ def compute_moon_overlay(
     north_angle_deg  : angle from image up to celestial north, CW positive
     min_diameter_km  : filter features smaller than this (useful at small moon_r)
     limb_fraction    : features beyond this fraction of moon_r (near limb) are hidden
+    show_limb        : draw a ring at moon_r marking the Moon's disk perimeter
+    limb_color       : RGBA color of the limb ring
 
     Returns
     -------
@@ -323,6 +330,10 @@ def compute_moon_overlay(
 
     if moon_r <= 0:
         return overlay, []
+
+    if show_limb:
+        _draw_ring(overlay, int(round(moon_cx)), int(round(moon_cy)),
+                   int(round(moon_r)), limb_color)
 
     l_prime, b_prime, P_axis = moon_libration(t)
     lp = math.radians(l_prime)

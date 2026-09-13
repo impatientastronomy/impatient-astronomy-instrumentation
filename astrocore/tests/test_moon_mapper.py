@@ -22,6 +22,7 @@ from astrocore.display.moon_mapper import (
     load_moon_catalog,
     moon_libration,
     MOON_ANGULAR_RADIUS_DEG,
+    MOON_RADIUS_KM,
 )
 
 # ── _normalize_type ───────────────────────────────────────────────────────────
@@ -212,7 +213,8 @@ class TestComputeMoonOverlay:
 
     def test_empty_features(self):
         ov, table = compute_moon_overlay([], 320, 240, 200,
-                                         image_shape=(480, 640), t=self.T0)
+                                         image_shape=(480, 640), t=self.T0,
+                                         show_limb=False)
         assert np.all(ov == 0)
         assert table == []
 
@@ -291,7 +293,43 @@ class TestComputeMoonOverlay:
         assert len(table) > 20   # plenty of features on the near side
 
 
+# ── limb ring ────────────────────────────────────────────────────────────────
+
+class TestLimbRing:
+    T0 = datetime(2024, 6, 21, 3, 0, 0, tzinfo=timezone.utc)
+
+    def test_limb_drawn_by_default(self):
+        ov, _ = compute_moon_overlay([], 320, 240, 200,
+                                     image_shape=(480, 640), t=self.T0)
+        assert np.any(ov[:, :, 3] > 0)
+
+    def test_limb_pixels_near_moon_r(self):
+        ov, _ = compute_moon_overlay([], 320, 240, 200,
+                                     image_shape=(480, 640), t=self.T0)
+        ys, xs = np.nonzero(ov[:, :, 3])
+        dists = np.sqrt((xs - 320) ** 2 + (ys - 240) ** 2)
+        assert dists.min() > 195 and dists.max() < 202
+
+    def test_show_limb_false_suppresses_ring(self):
+        ov, _ = compute_moon_overlay([], 320, 240, 200,
+                                     image_shape=(480, 640), t=self.T0,
+                                     show_limb=False)
+        assert np.all(ov == 0)
+
+    def test_limb_color_applied(self):
+        color = (10, 20, 30, 255)
+        ov, _ = compute_moon_overlay([], 320, 240, 200,
+                                     image_shape=(480, 640), t=self.T0,
+                                     limb_color=color)
+        ys, xs = np.nonzero(ov[:, :, 3])
+        assert tuple(ov[ys[0], xs[0]]) == color
+
+
 # ── constants ────────────────────────────────────────────────────────────────
 
 def test_moon_angular_radius_reasonable():
     assert 0.24 < MOON_ANGULAR_RADIUS_DEG < 0.28
+
+
+def test_moon_radius_km_reasonable():
+    assert 1700.0 < MOON_RADIUS_KM < 1750.0

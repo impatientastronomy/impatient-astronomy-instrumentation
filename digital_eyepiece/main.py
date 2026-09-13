@@ -82,7 +82,7 @@ from digital_eyepiece.gallery_server import GalleryServer
 from astrocore.display.overlay_style import load_overlay_style
 from astrocore.display.skyoverlay import CatalogEntry, ObjType, compute_overlay, load_catalog, load_constellation_lines
 from astrocore.display.moon_mapper import (
-    MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog, moon_radec,
+    MOON_ANGULAR_RADIUS_DEG, MOON_RADIUS_KM, compute_moon_overlay, load_moon_catalog, moon_radec,
 )
 from astrocore.display.planets import PLANET_NAMES, planet_radec
 from astrocore.mount.coord import altaz_to_radec, angular_separation_deg, radec_to_altaz
@@ -627,6 +627,68 @@ def _render_status_stack(surface: pygame.Surface, win_h: int, lines: list[str]) 
         y -= label.get_height()
         surface.blit(label, (x, y))
         y -= pad
+
+
+_SCALE_BAR_TARGET_FRAC = 0.18   # target scale-bar length as a fraction of the image width
+_SCALE_BAR_GAP_FRAC    = 1 / 60 # gap between the scale bar and the mount-connect button row
+
+
+def _nice_round_km(value: float) -> float:
+    """Snap to a conventional 1-2-5 map-scale sequence, for a clean bar label."""
+    if value <= 0:
+        return 0.0
+    exp  = math.floor(math.log10(value))
+    base = value / (10 ** exp)
+    if base < 1.5:
+        nice = 1.0
+    elif base < 3.5:
+        nice = 2.0
+    elif base < 7.5:
+        nice = 5.0
+    else:
+        nice = 10.0
+    return nice * (10 ** exp)
+
+
+def _render_moon_scale_bar(
+    surface: pygame.Surface,
+    win_w: int, win_h: int,
+    img_w: int,
+    moon_r_px: float,
+) -> None:
+    """
+    Distance scale bar for Moon-map mode, showing crater/feature size in km.
+
+    Bottom-center, sitting just above the (proximity-revealed) mount-connect
+    edge button. Bar length in pixels is recomputed every frame from the
+    current Moon disk radius, so it tracks the zoom level live.
+    """
+    if moon_r_px <= 0:
+        return
+
+    km_per_px = MOON_RADIUS_KM / moon_r_px
+    target_px = img_w * _SCALE_BAR_TARGET_FRAC
+    nice_km   = _nice_round_km(target_px * km_per_px)
+    if nice_km <= 0:
+        return
+    bar_px = nice_km / km_per_px
+
+    btn_size = int(win_h * _EDGE_BTN_FRAC)
+    margin   = int(win_h * _EDGE_MARGIN_FRAC)
+    gap      = int(win_h * _SCALE_BAR_GAP_FRAC)
+    y = win_h - margin - btn_size - gap
+
+    cx = win_w // 2
+    x0 = int(cx - bar_px / 2)
+    x1 = int(cx + bar_px / 2)
+
+    tick_h = 5
+    pygame.draw.line(surface, WHITE, (x0, y), (x1, y), 2)
+    pygame.draw.line(surface, WHITE, (x0, y - tick_h), (x0, y + tick_h), 2)
+    pygame.draw.line(surface, WHITE, (x1, y - tick_h), (x1, y + tick_h), 2)
+
+    label = _font(12).render(f"{nice_km:g} km", True, WHITE)
+    surface.blit(label, (cx - label.get_width() // 2, y - tick_h - label.get_height() - 2))
 
 
 # --- vertical drop-down panel (Action + Utilities menus) --------------------
@@ -2220,6 +2282,9 @@ def main() -> None:
                     screen.blit(_ov_surf, img_rect.topleft)
                 _render_constellation_labels(screen, ov_table, img_rect)
                 _render_hover_label(screen, ov_table, *cursor_pos, img_rect=img_rect)
+
+                if state.moon_mode:
+                    _render_moon_scale_bar(screen, win_w, win_h, img_rect.width, moon_r_px)
 
             # Menus
             if state.active_menu == "menu":

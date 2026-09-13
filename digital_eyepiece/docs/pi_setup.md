@@ -141,6 +141,8 @@ The script:
 - On Raspberry Pi: copies the ZWO ASI udev rule to `/etc/udev/rules.d/` (requires sudo)
 - On Raspberry Pi: appends the Waveshare display timings and USB current setting to
   `/boot/firmware/config.txt` (requires sudo)
+- On Raspberry Pi: adds a **Digital Eyepiece** icon to the desktop so the app can be
+  launched with just a mouse — no keyboard needed in the field (see step 10)
 
 It is safe to run more than once — each step checks whether it has already been applied.
 
@@ -274,14 +276,29 @@ can now unplug the wired USB mouse.
 
 ## 10. Run the eyepiece software
 
-From the repository root:
+**In the field (no keyboard needed):** double-click the **Digital Eyepiece** icon on
+the desktop — added automatically by the install script in step 5.
+
+The first time you double-click it, the file manager will likely ask whether to trust
+it. Choose **Execute** (older Raspberry Pi OS versions: right-click the icon →
+Properties → Permissions → check "Allow this file to run as a program"). After that
+first confirmation, double-clicking launches the app directly from then on.
+
+The launcher redirects all output to `~/digital_eyepiece/launch.log` instead of a
+terminal — if something goes wrong with no keyboard attached to see it live, connect
+later (e.g. over SSH) and check that file:
+
+```bash
+tail -50 ~/digital_eyepiece/launch.log
+```
+
+**From a terminal (useful during development):**
 
 ```bash
 uv run python -m digital_eyepiece.main
 ```
 
-The application opens fullscreen by default.  To run in a window instead (useful during
-development):
+The application opens fullscreen by default.  To run in a window instead:
 
 ```bash
 uv run python -m digital_eyepiece.main --windowed
@@ -291,6 +308,11 @@ The ZWO camera connects automatically.  If no camera is found, an alert is shown
 the software waits.
 
 **To exit:** press `Q` or `Escape`.
+
+> The desktop icon is for launching on demand with a mouse — the desktop boots
+> normally and you double-click when you're ready. If you'd rather the app start
+> automatically every time the Pi boots, with no click at all, see step 12
+> instead.
 
 ### Running without a camera (virtual camera)
 
@@ -406,6 +428,14 @@ Waveshare display is powered by HDMI and a marginal cable can cause instability.
 The desktop environment must be running before the eyepiece starts.  If you are connecting
 over SSH, the application cannot open a window.  Connect a keyboard/mouse to the Pi or
 enable VNC, then launch the software from the Pi's own desktop session.
+
+**Desktop icon does nothing / asks to trust the file every time**
+Right-click the icon → Properties → Permissions tab → check "Allow this file to run
+as a program", then double-click again. If it still does nothing, check
+`~/digital_eyepiece/launch.log` for what happened on the last attempt — a bad
+`configuration.yaml` or a missing `.venv` (run `uv sync` once from the repo root)
+are the usual causes. If the icon is missing entirely, re-run
+`bash utilities/install.sh` (safe to re-run).
 
 **Calibration data warnings at startup**
 These are non-fatal.  The software runs without calibration; dark and flat correction is

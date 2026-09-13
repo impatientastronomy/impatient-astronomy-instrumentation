@@ -13,7 +13,8 @@ What it does:
        digital_eyepiece/config/configuration.yaml if no config exists yet
     5. macOS only: fixes the libSDL2 duplicate bundled by opencv and pygame
     6. Raspberry Pi only: installs the ZWO ASI udev rule and Waveshare display timings
-    7. (step removed — USB WiFi adapter no longer needs a pinned name)
+    7. Raspberry Pi only: adds a double-clickable "Digital Eyepiece" Desktop icon
+       (no keyboard needed to launch the app in the field)
 
 Safe to re-run — every step checks whether it has already been applied.
 """
@@ -185,7 +186,52 @@ def _setup_pi() -> bool:
         print("  USB max current enabled.")
         reboot_needed = True
 
+    _install_desktop_icon()
+
     return reboot_needed
+
+
+# ---------------------------------------------------------------------------
+# 6b. Raspberry Pi: double-clickable Desktop icon (no keyboard needed to launch)
+# ---------------------------------------------------------------------------
+
+_DESKTOP_ICON = """\
+[Desktop Entry]
+Type=Application
+Name=Digital Eyepiece
+Comment=Launch the digital eyepiece live viewer
+Exec={launch_path}
+Icon=camera-photo
+Terminal=false
+Categories=Utility;
+"""
+
+
+def _install_desktop_icon() -> None:
+    """
+    Add a "Digital Eyepiece" icon to ~/Desktop that runs launch.sh.
+
+    Lets the app be started with just a mouse in the field -- no keyboard
+    needed. No-op if there's no Desktop folder (e.g. Raspberry Pi OS Lite,
+    no desktop environment).
+    """
+    desktop_dir = Path.home() / "Desktop"
+    if not desktop_dir.exists():
+        return
+
+    launch_script = REPO_ROOT / "digital_eyepiece" / "launch.sh"
+    launch_script.chmod(launch_script.stat().st_mode | 0o111)
+
+    content = _DESKTOP_ICON.format(launch_path=launch_script)
+    icon_path = desktop_dir / "DigitalEyepiece.desktop"
+    if icon_path.exists() and icon_path.read_text() == content:
+        print("  Desktop icon already installed, skipping.")
+        return
+
+    icon_path.write_text(content)
+    icon_path.chmod(icon_path.stat().st_mode | 0o111)
+    print(f"  Desktop icon installed at {icon_path}")
+    print("  First launch: right-click it and choose 'Execute' (or allow it to run as a program)")
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +247,8 @@ def main() -> None:
 
     print("\nInstallation complete.")
 
+    on_pi = platform.machine() == "aarch64" and Path("/boot/firmware/config.txt").exists()
+
     if reboot_needed:
         print("\nConfiguration changes were made — reboot before continuing:")
         print("  sudo reboot")
@@ -211,6 +259,10 @@ def main() -> None:
     else:
         print("\nRun the digital eyepiece with:")
         print("  uv run python -m digital_eyepiece.main")
+
+    if on_pi:
+        print("\nOr, in the field with no keyboard: double-click the Digital Eyepiece")
+        print("icon on the desktop (see step 10 of docs/pi_setup.md for first-launch notes).")
 
 
 if __name__ == "__main__":

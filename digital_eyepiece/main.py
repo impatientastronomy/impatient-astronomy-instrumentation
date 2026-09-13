@@ -1686,28 +1686,38 @@ def main() -> None:
             def _worker() -> None:
                 configured_us: int | None = None
                 while not stop_event.is_set():
-                    exp_us = _exposure_ref[0]
-                    result = grabber.grab_frame(
-                        exposure_us = exp_us if exp_us != configured_us else None,
-                        dark        = not _focus_hardware_roi and grabber.cal_path is not None,
-                        flat        = not _focus_hardware_roi and grabber.cal_path is not None,
-                        dpc         = False,
-                        demosaic    = grabber.pattern is not None,
-                        median      = True,
-                    )
-                    if result.status == GrabStatus.WORKING:
-                        time.sleep(0.001)
-                        continue
-                    if result.status == GrabStatus.STARTED:
+                    try:
+                        exp_us = _exposure_ref[0]
+                        result = grabber.grab_frame(
+                            exposure_us = exp_us if exp_us != configured_us else None,
+                            dark        = not _focus_hardware_roi and grabber.cal_path is not None,
+                            flat        = not _focus_hardware_roi and grabber.cal_path is not None,
+                            dpc         = False,
+                            demosaic    = grabber.pattern is not None,
+                            median      = True,
+                        )
+                        if result.status == GrabStatus.WORKING:
+                            time.sleep(0.001)
+                            continue
+                        if result.status == GrabStatus.STARTED:
+                            configured_us = exp_us
+                            continue
                         configured_us = exp_us
-                        continue
-                    configured_us = exp_us
-                    if (result.status == GrabStatus.SUCCESS
-                            and recorder is not None
-                            and result.raw_frame is not None):
-                        recorder.save(result.raw_frame)
-                    with _frame_lock:
-                        _latest_frame[0] = result
+                        if (result.status == GrabStatus.SUCCESS
+                                and recorder is not None
+                                and result.raw_frame is not None):
+                            recorder.save(result.raw_frame)
+                        with _frame_lock:
+                            _latest_frame[0] = result
+                    except Exception:
+                        # This thread has no supervisor to restart it -- an
+                        # uncaught exception here silently freezes the live
+                        # view for the rest of the session. Log and keep
+                        # going instead of dying on a one-off hiccup (e.g.
+                        # a transient camera/USB read failure or disk error
+                        # from recorder.save()).
+                        logging.exception("Grab worker iteration failed; continuing")
+                        time.sleep(0.1)
             return threading.Thread(target=_worker, daemon=True)
 
         _stop_grab  = threading.Event()

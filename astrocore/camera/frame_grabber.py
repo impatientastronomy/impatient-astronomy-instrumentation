@@ -36,8 +36,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .base import Camera, ExposureStatus, Frame
+from .base import Camera, ExposureError, ExposureStatus, Frame
 from .catalog import scan_folder
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +186,17 @@ class FrameGrabber:
             return GrabResult(status=GrabStatus.WORKING)
 
         if status == ExposureStatus.SUCCESS:
-            raw_frame = self._camera.read_frame()
+            try:
+                raw_frame = self._camera.read_frame()
+            except ExposureError as exc:
+                # A driver-level read can fail even after the camera reports
+                # SUCCESS (seen on the ZWO ASI SDK as a transient USB timeout).
+                # Discard this exposure and start fresh rather than letting a
+                # one-off hardware hiccup propagate and kill the caller's loop.
+                log.warning("Frame read failed, discarding exposure: %s", exc)
+                self._camera.abort()
+                self._start_exposure()
+                return GrabResult(status=GrabStatus.FAILED, message=str(exc))
             self._start_exposure()              # immediately queue next exposure
 
             imR = raw_frame.data.copy().astype(np.uint16)

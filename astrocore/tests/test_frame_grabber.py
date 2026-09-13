@@ -13,6 +13,7 @@ import pytest
 from astrocore.camera.base import (
     Camera,
     CameraInfo,
+    ExposureError,
     ExposureStatus,
     Frame,
     FrameMeta,
@@ -57,6 +58,7 @@ class _FakeCamera(Camera):
         self.start_count = 0
         self.abort_count = 0
         self.read_count = 0
+        self.fail_read = False
 
     def connect(self) -> None:
         self._connected = True
@@ -86,6 +88,8 @@ class _FakeCamera(Camera):
     def read_frame(self) -> Frame:
         self.read_count += 1
         self._status = ExposureStatus.IDLE
+        if self.fail_read:
+            raise ExposureError("simulated transient read failure")
         return Frame(
             data=np.ones((100, 100), dtype=np.uint16) * 1000,
             meta=_make_meta(self.exposure_seconds),
@@ -157,6 +161,39 @@ class TestGrabFrameStateMachine:
         assert result.status == GrabStatus.TIMEOUT
         assert camera.abort_count == 1
         assert "timed out" in result.message
+
+    def test_read_failure_reports_failed_instead_of_raising(self, grabber, camera):
+        # A driver-level read error (e.g. a transient ZWO SDK timeout) must
+        # not propagate out of grab_frame() -- callers run this in a loop
+        # with no supervisor to restart it on an uncaught exception.
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=False, flat=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        camera.fail_read = True
+        result = grabber.grab_frame(dark=False, flat=False)
+        assert result.status == GrabStatus.FAILED
+        assert "simulated transient read failure" in result.message
+
+    def test_read_failure_aborts_and_restarts_exposure(self, grabber, camera):
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=False, flat=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        camera.fail_read = True
+        grabber.grab_frame(dark=False, flat=False)
+        assert camera.abort_count == 1
+        assert camera.start_count == 2   # initial start + restart after the failed read
+
+    def test_recovers_on_next_successful_grab_after_read_failure(self, grabber, camera):
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=False, flat=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        camera.fail_read = True
+        grabber.grab_frame(dark=False, flat=False)       # FAILED, restarts exposure
+
+        camera.fail_read = False
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=False, flat=False)
+        assert result.status == GrabStatus.SUCCESS
 
 
 # ---------------------------------------------------------------------------

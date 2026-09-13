@@ -58,6 +58,12 @@ class OverlayStyle:
     cluster: ObjectTypeStyle = field(default_factory=lambda: ObjectTypeStyle(
         color=(80, 220, 80), alpha=210, mag_limit=8.0,
         max_count=30, size_min=4, size_max=40, shape="circle_cross"))
+    moon:    ObjectTypeStyle = field(default_factory=lambda: ObjectTypeStyle(
+        color=(235, 235, 225), alpha=230, mag_limit=30.0,
+        max_count=1, size_min=6, size_max=200, shape="circle"))
+    planet:  ObjectTypeStyle = field(default_factory=lambda: ObjectTypeStyle(
+        color=(255, 200, 120), alpha=230, mag_limit=30.0,
+        max_count=8, size_min=3, size_max=30, shape="circle_cross"))
     horizon:       FeatureStyle = field(default_factory=lambda: FeatureStyle(
         show=True,  color=(255, 160, 0),   alpha=180))
     fov_box:       FeatureStyle = field(default_factory=lambda: FeatureStyle(
@@ -96,6 +102,8 @@ def load_overlay_style(path: str | Path, style_name: str) -> OverlayStyle:
         galaxy  = _parse_type_style(block.get("galaxy"),  _DEFAULT_STYLE.galaxy),
         nebula  = _parse_type_style(block.get("nebula"),  _DEFAULT_STYLE.nebula),
         cluster = _parse_type_style(block.get("cluster"), _DEFAULT_STYLE.cluster),
+        moon    = _parse_type_style(block.get("moon"),    _DEFAULT_STYLE.moon),
+        planet  = _parse_type_style(block.get("planet"),  _DEFAULT_STYLE.planet),
         horizon        = _parse_feature_style(block.get("horizon"),        _DEFAULT_STYLE.horizon),
         fov_box        = _parse_feature_style(block.get("fov_box"),        _DEFAULT_STYLE.fov_box),
         constellations = _parse_feature_style(block.get("constellations"), _DEFAULT_STYLE.constellations),

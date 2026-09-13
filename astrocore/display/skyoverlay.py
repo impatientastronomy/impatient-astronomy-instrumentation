@@ -35,6 +35,8 @@ class ObjType:
     GALAXY  = "galaxy"
     NEBULA  = "nebula"
     CLUSTER = "cluster"
+    MOON    = "moon"
+    PLANET  = "planet"
 
 
 @dataclass

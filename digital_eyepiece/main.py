@@ -80,10 +80,11 @@ from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import CameraConfig, Configuration, HotspotConfig, compute_hfov, load
 from digital_eyepiece.gallery_server import GalleryServer
 from astrocore.display.overlay_style import load_overlay_style
-from astrocore.display.skyoverlay import compute_overlay, load_catalog, load_constellation_lines
+from astrocore.display.skyoverlay import CatalogEntry, ObjType, compute_overlay, load_catalog, load_constellation_lines
 from astrocore.display.moon_mapper import (
     MOON_ANGULAR_RADIUS_DEG, compute_moon_overlay, load_moon_catalog, moon_radec,
 )
+from astrocore.display.planets import PLANET_NAMES, planet_radec
 from astrocore.mount.coord import altaz_to_radec, angular_separation_deg, radec_to_altaz
 from astrocore.pipeline.stacker import ConstellationStacker, ExposureSequence
 from astrocore.pipeline.streaming import StreamExposure
@@ -126,6 +127,39 @@ FOCUS_ROI_HALF = 200
 # enough on screen to be worth labeling.
 MOON_MODE_SEPARATION_DEG   = 0.7    # max scope-to-Moon pointing error
 MOON_MODE_MIN_FOV_FRACTION = 0.33   # min Moon diameter as a fraction of the horizontal FOV
+
+
+def _solar_system_catalog_entries() -> list[CatalogEntry]:
+    """
+    Moon + planet positions as CatalogEntry rows, for merging into the star
+    catalog before compute_overlay().  Ensures the Moon and planets always
+    render as overlay markers (SkyMap and normal sky overlay alike) whenever
+    they're in the current field of view, independent of Moon-map mode.
+    """
+    entries: list[CatalogEntry] = []
+
+    moon_ra_h, moon_dec_deg = moon_radec()
+    entries.append(CatalogEntry(
+        ra_deg      = moon_ra_h * 15.0,
+        dec_deg     = moon_dec_deg,
+        mag         = -12.7,
+        size_arcmin = 2 * MOON_ANGULAR_RADIUS_DEG * 60.0,
+        obj_type    = ObjType.MOON,
+        name        = "Moon",
+    ))
+
+    for name in PLANET_NAMES:
+        ra_h, dec_deg, mag = planet_radec(name)
+        entries.append(CatalogEntry(
+            ra_deg      = ra_h * 15.0,
+            dec_deg     = dec_deg,
+            mag         = mag,
+            size_arcmin = 0.0,
+            obj_type    = ObjType.PLANET,
+            name        = name,
+        ))
+
+    return entries
 
 # Edge-button geometry, expressed as fractions of window height so it scales
 # with resolution. Tune EDGE_REVEAL_HOLD / _EDGE_REVEAL_BAND_FRAC against the
@@ -2101,7 +2135,7 @@ def main() -> None:
                             d_az  = (state.zoom_center_x - 0.5) * state.sky_map_fov
                             d_alt = -(state.zoom_center_y - 0.5) * state.sky_map_fov * aspect
                             ov_arr, ov_table = compute_overlay(
-                                catalog,
+                                catalog + _solar_system_catalog_entries(),
                                 fov_deg     = state.sky_map_fov,
                                 alt_deg     = alt_deg + d_alt,
                                 az_deg      = az_deg + d_az,
@@ -2162,7 +2196,7 @@ def main() -> None:
                             d_az  = (state.zoom_center_x - 0.5) * fov_ref[0]
                             d_alt = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect
                             ov_arr, ov_table = compute_overlay(
-                                catalog,
+                                catalog + _solar_system_catalog_entries(),
                                 fov_deg     = eff_fov,
                                 alt_deg     = alt_deg + d_alt,
                                 az_deg      = az_deg + d_az,

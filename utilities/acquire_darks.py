@@ -41,6 +41,7 @@ from astrocore.config.camera_config import load as load_config
 
 _DEFAULT_CONFIG = (Path(__file__).resolve().parent.parent
                     / "digital_eyepiece" / "config" / "configuration.yaml")
+_DATA_ROOT = Path.home() / "digital_eyepiece"
 
 _print_lock = threading.Lock()
 
@@ -173,7 +174,7 @@ def main() -> None:
 
     # Load configuration
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, data_root=_DATA_ROOT)
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)

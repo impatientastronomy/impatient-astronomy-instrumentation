@@ -51,6 +51,7 @@ from astrocore.config.camera_config import load as load_config
 
 _DEFAULT_CONFIG = (Path(__file__).resolve().parent.parent
                     / "digital_eyepiece" / "config" / "configuration.yaml")
+_DATA_ROOT = Path.home() / "digital_eyepiece"
 
 _BIAS_EXP_US  = 100     # 100 µs — camera minimum exposure; bias dark match key
 _MAX_EXP_S    = 30.0
@@ -269,7 +270,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, data_root=_DATA_ROOT)
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)

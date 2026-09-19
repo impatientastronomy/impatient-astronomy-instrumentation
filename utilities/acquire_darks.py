@@ -39,7 +39,8 @@ from astrocore.camera.naming import frame_filename
 from astrocore.camera.zwo_asi import FlipMode, ZwoAsiCamera, list_cameras
 from astrocore.config.camera_config import load as load_config
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configuration.yaml"
+_DEFAULT_CONFIG = (Path(__file__).resolve().parent.parent
+                    / "digital_eyepiece" / "config" / "configuration.yaml")
 
 _print_lock = threading.Lock()
 
@@ -72,7 +73,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--config", type=Path, default=_DEFAULT_CONFIG, metavar="PATH",
-        help=f"Path to configuration.yaml (default: {_DEFAULT_CONFIG.name})",
+        help=f"Path to configuration.yaml (default: {_DEFAULT_CONFIG.relative_to(Path(__file__).resolve().parent.parent)})",
     )
     return p.parse_args()
 

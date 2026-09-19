@@ -31,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from astrocore.camera.zwo_asi import ZwoAsiCamera, list_cameras
 
-_DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configuration.yaml"
+_DEFAULT_CONFIG = (Path(__file__).resolve().parent.parent
+                    / "digital_eyepiece" / "config" / "configuration.yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ def _parse_args() -> argparse.Namespace:
                         "The YAML is not modified when --force is used.")
     p.add_argument("--config", type=Path, default=_DEFAULT_CONFIG, metavar="PATH",
                    help="Path to configuration.yaml "
-                        f"(default: {_DEFAULT_CONFIG.name})")
+                        f"(default: {_DEFAULT_CONFIG.relative_to(Path(__file__).resolve().parent.parent)})")
     return p.parse_args()
 
 

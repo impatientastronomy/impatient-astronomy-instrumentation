@@ -2515,5 +2515,9 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        force=True,   # override any handler a third-party import already attached
+                      # to the root logger -- otherwise basicConfig() silently
+                      # no-ops and INFO-level logs (and our configured format)
+                      # never appear, only WARNING+ via Python's bare last-resort handler
     )
     main()

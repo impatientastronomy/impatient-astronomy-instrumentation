@@ -1818,7 +1818,15 @@ def main() -> None:
         # any extra data rate. Always centered -- scroll-wheel zoom (and this)
         # never depend on cursor/pan position, unlike focus mode's ROI, which
         # is deliberately centered wherever the user clicked to focus.
-        _LIVE_BIN_HYSTERESIS = 0.85   # zoom must drop below hysteresis*threshold to switch back
+        #
+        # Hysteresis: switching bin rescales zoom_level by 2x (halved going to
+        # bin=1, doubled coming back), which swamps any small hysteresis ratio
+        # -- e.g. an 0.85x margin flips right back after a 2x jump, producing
+        # an infinite switch-every-frame loop right at the threshold. Anchor
+        # the down-switch to the zoom_min floor instead: switching up leaves
+        # zoom_level at roughly threshold/2, comfortably above zoom_min as
+        # long as threshold > 2*zoom_min, so there's a real gap the user has
+        # to actually scroll back through before the down-switch can fire.
 
         def _live_bin_threshold() -> float:
             """zoom_level above which bin=2 no longer has enough pixels for the display."""
@@ -1855,9 +1863,11 @@ def main() -> None:
                     or state.focus_state != FocusState.OFF):
                 return
             threshold = _live_bin_threshold()
-            if _live_bin[0] == 2 and state.zoom_level > threshold:
+            if (_live_bin[0] == 2
+                    and threshold > 2 * _zoom_min   # else no stable gap exists -- stay at bin=2
+                    and state.zoom_level > threshold):
                 _set_live_bin(1)
-            elif _live_bin[0] == 1 and state.zoom_level < threshold * _LIVE_BIN_HYSTERESIS:
+            elif _live_bin[0] == 1 and state.zoom_level <= _zoom_min:
                 _set_live_bin(2)
 
         def _revert_static_bin() -> None:

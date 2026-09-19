@@ -71,26 +71,26 @@ class TestContext:
 
 class TestScrollImageZoom:
     def test_scroll_in_increases_zoom(self, dispatcher, state):
-        dispatcher.on_scroll(-1)    # scroll down = zoom in
+        dispatcher.on_scroll(1)     # scroll up = zoom in
         assert state.zoom_level == pytest.approx(2.0)
 
     def test_scroll_out_decreases_zoom(self, dispatcher, state):
         state.zoom_level = 4.0
-        dispatcher.on_scroll(1)     # scroll up = zoom out
+        dispatcher.on_scroll(-1)    # scroll down = zoom out
         assert state.zoom_level == pytest.approx(2.0)
 
     def test_zoom_clamped_at_max(self, dispatcher, state):
         state.zoom_level = 8.0
-        dispatcher.on_scroll(-1)    # scroll down = zoom in; already at max
+        dispatcher.on_scroll(1)     # scroll up = zoom in; already at max
         assert state.zoom_level == pytest.approx(8.0)
 
     def test_zoom_clamped_at_min_without_multicam(self, dispatcher, state):
         state.zoom_level = 1.0
-        dispatcher.on_scroll(1)     # scroll up = zoom out; already at min
+        dispatcher.on_scroll(-1)    # scroll down = zoom out; already at min
         assert state.zoom_level == pytest.approx(1.0)
 
     def test_multi_step_scroll(self, dispatcher, state):
-        dispatcher.on_scroll(-2)    # scroll down 2 clicks = zoom_step^2 = 4×
+        dispatcher.on_scroll(2)     # scroll up 2 clicks = zoom_step^2 = 4×
         assert state.zoom_level == pytest.approx(4.0)
 
 
@@ -117,13 +117,13 @@ class TestScrollMenu:
 class TestScrollOverlay:
     def test_scroll_in_increases_image_zoom(self, dispatcher, state):
         state.overlay_active = True
-        dispatcher.on_scroll(-1)    # scroll down = zoom in
+        dispatcher.on_scroll(1)     # scroll up = zoom in
         assert state.zoom_level == pytest.approx(2.0)
 
     def test_scroll_out_decreases_image_zoom(self, dispatcher, state):
         state.overlay_active = True
         state.zoom_level = 4.0
-        dispatcher.on_scroll(1)     # scroll up = zoom out
+        dispatcher.on_scroll(-1)    # scroll down = zoom out
         assert state.zoom_level == pytest.approx(2.0)
 
     def test_scroll_out_at_min_clamps_and_recenters(self, dispatcher, state):
@@ -132,7 +132,7 @@ class TestScrollOverlay:
         state.zoom_level = 1.0
         state.zoom_center_x = 0.7
         state.zoom_center_y = 0.3
-        dispatcher.on_scroll(1)     # scroll up = zoom out; already at min
+        dispatcher.on_scroll(-1)    # scroll down = zoom out; already at min
         assert state.all_sky_mode is False
         assert state.zoom_level == pytest.approx(1.0)
         assert state.zoom_center_x == pytest.approx(0.5)
@@ -142,12 +142,12 @@ class TestScrollOverlay:
         # all_sky_mode is now exited only by right-click, not by scroll
         state.overlay_active = True
         state.all_sky_mode = True
-        dispatcher.on_scroll(-1)
+        dispatcher.on_scroll(1)
         assert state.all_sky_mode is True
 
     def test_overlay_scroll_does_not_affect_menu(self, dispatcher, state):
         state.overlay_active = True
-        dispatcher.on_scroll(-1)
+        dispatcher.on_scroll(1)
         assert state.active_menu is None
 
 
@@ -257,40 +257,40 @@ class TestScrollSkyMap:
                                zoom_step=2.0, zoom_min=1.0, zoom_max=8.0,
                                sky_map_fov_min=10.0, sky_map_fov_max=60.0)
 
-    def test_scroll_down_decreases_fov(self, sky_dispatcher, state):
+    def test_scroll_up_decreases_fov(self, sky_dispatcher, state):
         state.all_sky_mode = True
         state.sky_map_fov = 20.0
-        sky_dispatcher.on_scroll(-1)    # scroll down = zoom in = smaller FOV
+        sky_dispatcher.on_scroll(1)     # scroll up = zoom in = smaller FOV
         assert state.sky_map_fov == pytest.approx(10.0)
 
-    def test_scroll_up_increases_fov(self, sky_dispatcher, state):
+    def test_scroll_down_increases_fov(self, sky_dispatcher, state):
         state.all_sky_mode = True
         state.sky_map_fov = 20.0
-        sky_dispatcher.on_scroll(1)     # scroll up = zoom out = larger FOV
+        sky_dispatcher.on_scroll(-1)    # scroll down = zoom out = larger FOV
         assert state.sky_map_fov == pytest.approx(40.0)
 
     def test_fov_clamped_at_min(self, sky_dispatcher, state):
         state.all_sky_mode = True
         state.sky_map_fov = 10.0
-        sky_dispatcher.on_scroll(-1)
+        sky_dispatcher.on_scroll(1)
         assert state.sky_map_fov == pytest.approx(10.0)
 
     def test_fov_clamped_at_max(self, sky_dispatcher, state):
         state.all_sky_mode = True
         state.sky_map_fov = 60.0
-        sky_dispatcher.on_scroll(1)
+        sky_dispatcher.on_scroll(-1)
         assert state.sky_map_fov == pytest.approx(60.0)
 
     def test_sky_map_scroll_does_not_change_zoom_level(self, sky_dispatcher, state):
         state.all_sky_mode = True
         state.sky_map_fov = 20.0
-        sky_dispatcher.on_scroll(-1)
+        sky_dispatcher.on_scroll(1)
         assert state.zoom_level == pytest.approx(1.0)
 
     def test_sky_map_scroll_does_not_affect_image_zoom(self, sky_dispatcher, state):
         state.all_sky_mode = False
         state.sky_map_fov = 20.0
-        sky_dispatcher.on_scroll(-1)    # normal mode: zooms image, not sky map
+        sky_dispatcher.on_scroll(1)    # normal mode: zooms image, not sky map
         assert state.sky_map_fov == pytest.approx(20.0)
 
 
@@ -304,7 +304,7 @@ class TestMultiCamIntegration:
         mock_cam.step_out.return_value = True
         dispatcher.register_multi_cam(mock_cam)
         state.zoom_level = 1.0
-        dispatcher.on_scroll(1)     # scroll up = zoom out at min
+        dispatcher.on_scroll(-1)    # scroll down = zoom out at min
         mock_cam.step_out.assert_called_once_with(state)
 
     def test_zoom_out_clamps_if_step_out_fails(self, dispatcher, state):
@@ -312,13 +312,13 @@ class TestMultiCamIntegration:
         mock_cam.step_out.return_value = False
         dispatcher.register_multi_cam(mock_cam)
         state.zoom_level = 1.0
-        dispatcher.on_scroll(1)     # scroll up = zoom out; step_out fails → clamp
+        dispatcher.on_scroll(-1)    # scroll down = zoom out; step_out fails → clamp
         assert state.zoom_level == pytest.approx(1.0)
 
     def test_zoom_in_does_not_trigger_step_out(self, dispatcher, state):
         mock_cam = MagicMock()
         dispatcher.register_multi_cam(mock_cam)
-        dispatcher.on_scroll(-1)    # scroll down = zoom in
+        dispatcher.on_scroll(1)    # scroll up = zoom in
         mock_cam.step_out.assert_not_called()
 
 
@@ -341,7 +341,7 @@ class TestZoomAboutCenter:
     def test_on_scroll_takes_no_position_argument(self, state, menu):
         rect = _FakeRect(0, 0, 800, 600)
         d = self._make_dispatcher_with_rect(state, menu, rect)
-        d.on_scroll(-1)  # would raise TypeError if on_scroll still accepted pos
+        d.on_scroll(1)  # would raise TypeError if on_scroll still accepted pos
         assert state.zoom_level == pytest.approx(2.0)
 
     def test_zoom_in_does_not_move_center(self, state, menu):
@@ -349,7 +349,7 @@ class TestZoomAboutCenter:
         d = self._make_dispatcher_with_rect(state, menu, rect)
         state.zoom_center_x = 0.7
         state.zoom_center_y = 0.4
-        d.on_scroll(-1)  # scroll down = zoom in
+        d.on_scroll(1)  # scroll up = zoom in
         assert state.zoom_center_x == pytest.approx(0.7)
         assert state.zoom_center_y == pytest.approx(0.4)
 
@@ -359,7 +359,7 @@ class TestZoomAboutCenter:
         state.zoom_level = 4.0
         state.zoom_center_x = 0.3
         state.zoom_center_y = 0.6
-        d.on_scroll(1)  # scroll up = zoom out, still above zoom_min
+        d.on_scroll(-1)  # scroll down = zoom out, still above zoom_min
         assert state.zoom_center_x == pytest.approx(0.3)
         assert state.zoom_center_y == pytest.approx(0.6)
 
@@ -369,7 +369,7 @@ class TestZoomAboutCenter:
         state.zoom_level = 1.0
         state.zoom_center_x = 0.7
         state.zoom_center_y = 0.3
-        d.on_scroll(1)  # scroll up = zoom out past min → clamp and recenter
+        d.on_scroll(-1)  # scroll down = zoom out past min → clamp and recenter
         assert state.zoom_level == pytest.approx(1.0)
         assert state.zoom_center_x == pytest.approx(0.5)
         assert state.zoom_center_y == pytest.approx(0.5)

@@ -9,8 +9,8 @@ Mouse mapping
 -------------
 Right-drag  : pan the zoomed image (normal live view)
 Left-drag   : pan the sky map (all_sky_mode only)
-Scroll down : zoom in (about the current view center) / menu down
-Scroll up   : zoom out / menu up
+Scroll up   : zoom in  (about the current view center) / menu up
+Scroll down : zoom out / menu down
 
 Overlay auto-hide
 -----------------
@@ -111,8 +111,8 @@ class InputDispatcher:
         """
         Handle a scroll-wheel event.
 
-        delta > 0 : scroll up   → zoom out / menu up
-        delta < 0 : scroll down → zoom in  / menu down
+        delta > 0 : scroll up   → zoom in  / menu up
+        delta < 0 : scroll down → zoom out / menu down
 
         Zoom always keeps the current view center fixed -- it never re-centers
         on the cursor.
@@ -121,9 +121,9 @@ class InputDispatcher:
             case ScrollContext.MENU:
                 self._menu.scroll(delta)
             case ScrollContext.SKY_MAP:
-                self._zoom_sky_map(delta)
+                self._zoom_sky_map(-delta)  # invert: scroll up = zoom in = smaller FOV
             case ScrollContext.IMAGE | ScrollContext.OVERLAY:
-                self._zoom_image(-delta)  # invert: scroll down = zoom in
+                self._zoom_image(delta)  # scroll up = zoom in
 
     def on_right_button_down(self, x: int, y: int) -> None:
         """Record the start of a right-button press for drag/click detection."""

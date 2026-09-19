@@ -40,10 +40,11 @@ Mouse
 Left-click  : over open menu item → select; off menu → cancel
               off menu, near an edge → revealed edge button → its action
               off menu, upper-left  → menu icon → open the menu tree
+              off menu, on image, in SkyMap → hold+drag to pan the sky map
 Middle-click: no menu → toggle Stack/Stream (same action as the Top button)
 Right-click : context menu (Slew here / Sync here / SkyMap / Focus / Exit SkyMap)
-Right-hold  : pan image
-Scroll      : zoom
+Right-hold  : pan image (normal zoomed view only — SkyMap uses left-hold instead)
+Scroll      : zoom, always about the current view center (never the cursor)
 Hover       : show object name when star overlay is active; show tooltip
               over a revealed edge button
 
@@ -1329,6 +1330,14 @@ def main() -> None:
                 cam_config.focal_length_mm, cam.info.pixel_size_um, roi_w,
             ) or fov_ref[0]
 
+        # Live-mode default: bin=2 regardless of the static cam_config.bin
+        # applied above -- see _set_live_bin()/_update_live_bin() below, which
+        # take over from here once the render loop starts.
+        _live_bin: list[int] = [1]
+        if isinstance(cam, ZwoAsiCamera):
+            cam.set_roi(x=0, y=0, width=None, height=None, bin=2)
+            _live_bin[0] = 2
+
         # -- open all other configured cameras so we can switch between them ----
         cam_pool: dict[int, ZwoAsiCamera | VirtualCamera] = {cam.info.camera_id: cam}
         _extra_cams: list[ZwoAsiCamera] = []
@@ -1378,6 +1387,15 @@ def main() -> None:
                 grabber.imFlat  = 0
                 grabber.imDPC   = 0
                 grabber.pattern = new_cfg.pattern or None
+                cam_config_ref[0] = new_cfg
+                # New physical camera -- its actual bin may not match what
+                # _live_bin thinks the old one was. Force a resync: 0 never
+                # matches a real bin, so the next call below always applies.
+                _live_bin[0] = 0
+                if state.mode == ViewMode.LIVE:
+                    _set_live_bin(2)
+                else:
+                    _revert_static_bin()
 
             cam_config_ref[0] = new_cfg
             roi_x, roi_y, roi_w, roi_h = new_cfg.effective_roi(
@@ -1544,11 +1562,14 @@ def main() -> None:
 
         context_menu_ref: list[Menu | None] = [None]
 
+        _zoom_min = 1.0
+        _zoom_max = config.max_zoom if config else 5.0
+
         dispatcher = InputDispatcher(
             state, main_menu,
             zoom_step       = 1.2,
-            zoom_min        = 1.0,
-            zoom_max        = config.max_zoom         if config else 5.0,
+            zoom_min        = _zoom_min,
+            zoom_max        = _zoom_max,
             sky_map_fov_min = config.sky_map.fov_min  if config else 10.0,
             sky_map_fov_max = config.sky_map.fov_max  if config else 60.0,
         )
@@ -1786,6 +1807,71 @@ def main() -> None:
             state.focus_state = FocusState.OFF
             state.mode        = ViewMode.LIVE
 
+        # -- Live-mode dynamic bin (streaming only, never during stacking) -----
+        #
+        # bin=2 cuts the sensor data rate (and so USB/CPU load and frame rate)
+        # to about a quarter of native bin=1 -- default there for a responsive
+        # live view. bin=1 + a centered 50% crop has the *same* pixel count as
+        # full-sensor bin=2 (half the linear extent at double the linear
+        # resolution), so switching to it once digitally zoomed in far enough
+        # that bin=2 can't fill the display sharpens the image without costing
+        # any extra data rate. Always centered -- scroll-wheel zoom (and this)
+        # never depend on cursor/pan position, unlike focus mode's ROI, which
+        # is deliberately centered wherever the user clicked to focus.
+        _LIVE_BIN_HYSTERESIS = 0.85   # zoom must drop below hysteresis*threshold to switch back
+
+        def _live_bin_threshold() -> float:
+            """zoom_level above which bin=2 no longer has enough pixels for the display."""
+            if cam_w_ref[0] <= 0 or img_rect.width <= 0:
+                return float("inf")
+            return cam_w_ref[0] / img_rect.width
+
+        def _set_live_bin(target_bin: int) -> None:
+            """Reconfigure the live camera to bin=2 (full sensor) or bin=1 (centered 50% crop)."""
+            if not isinstance(grabber.cam, ZwoAsiCamera) or _live_bin[0] == target_bin:
+                return
+            _stop_and_reset_grab()
+            if target_bin == 2:
+                grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=2)
+                state.zoom_level = min(_zoom_max, state.zoom_level * 2)
+            else:
+                sensor_w = grabber.cam.info.sensor_width_px
+                sensor_h = grabber.cam.info.sensor_height_px
+                crop_w = (sensor_w // 2) & ~7
+                crop_h = (sensor_h // 2) & ~1
+                x = ((sensor_w - crop_w) // 2) & ~1
+                y = ((sensor_h - crop_h) // 2) & ~1
+                grabber.cam.set_roi(x=x, y=y, width=crop_w, height=crop_h, bin=1)
+                state.zoom_level = max(_zoom_min, state.zoom_level / 2)
+            state.zoom_center_x = 0.5
+            state.zoom_center_y = 0.5
+            _live_bin[0] = target_bin
+            _restart_grab()
+
+        def _update_live_bin() -> None:
+            """Call once per frame while streaming to auto-switch bin with zoom level."""
+            if (not isinstance(grabber.cam, ZwoAsiCamera)
+                    or state.all_sky_mode
+                    or state.focus_state != FocusState.OFF):
+                return
+            threshold = _live_bin_threshold()
+            if _live_bin[0] == 2 and state.zoom_level > threshold:
+                _set_live_bin(1)
+            elif _live_bin[0] == 1 and state.zoom_level < threshold * _LIVE_BIN_HYSTERESIS:
+                _set_live_bin(2)
+
+        def _revert_static_bin() -> None:
+            """Stacking always uses the configured (static) bin -- undo any live dynamic bin/crop."""
+            if not isinstance(grabber.cam, ZwoAsiCamera):
+                return
+            static_bin = cam_config_ref[0].bin
+            if _live_bin[0] == static_bin:
+                return
+            _stop_and_reset_grab()
+            grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=static_bin)
+            _live_bin[0] = static_bin
+            _restart_grab()
+
         last_surface: pygame.Surface | None = None
         frame_count   = 0
         fps_display   = 0.0
@@ -1870,7 +1956,9 @@ def main() -> None:
 
                 elif event.type == pygame.MOUSEMOTION:
                     cursor_pos  = event.pos
-                    dispatcher.on_mouse_move(*event.pos, right_held=bool(event.buttons[2]))
+                    dispatcher.on_mouse_move(*event.pos,
+                                              right_held=bool(event.buttons[2]),
+                                              left_held=bool(event.buttons[0]))
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos
@@ -1920,11 +2008,17 @@ def main() -> None:
                                 main_menu.reset()
                                 _open_menu("menu")
                             else:
+                                hit_edge_button = False
                                 for _btn in EDGE_BUTTONS:
                                     if (_edge_reveal[_btn.edge] > 0 and _btn.rect is not None
                                             and _btn.rect.collidepoint(mx, my)):
                                         _btn.action_fn()
+                                        hit_edge_button = True
                                         break
+                                if not hit_edge_button and state.all_sky_mode:
+                                    # Left-drag pans the sky map (right-drag pans
+                                    # the normal zoomed view instead — see dispatcher).
+                                    dispatcher.on_left_button_down(mx, my)
 
                     elif event.button == 2 and not state.active_menu:
                         # --- Middle-click: toggle Stream / Stack ---
@@ -1940,6 +2034,9 @@ def main() -> None:
                             _close_menu()
 
                 elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1:
+                        dispatcher.on_left_button_up()
+
                     if event.button == 3 and dispatcher.on_right_button_up():
                         if not state.active_menu and state.focus_state == FocusState.ACTIVE:
                             m = Menu()
@@ -2053,7 +2150,7 @@ def main() -> None:
                 elif event.type == pygame.MOUSEWHEEL:
                     if state.focus_state == FocusState.OFF:
                         if state.active_menu in (None, "controls"):
-                            dispatcher.on_scroll(event.y, cursor_pos)   # zoom
+                            dispatcher.on_scroll(event.y)   # zoom, always about current center
                         elif state.active_menu == "menu":
                             main_menu.scroll(-event.y)
 
@@ -2065,13 +2162,16 @@ def main() -> None:
                     if state.recording and recorder is not None:
                         state.recording = False
                         recorder.stop()
+                    _set_live_bin(2)   # reset point; _update_live_bin() re-derives the right bin below
                 elif state.mode == ViewMode.ACCUMULATE:
                     stacker.reset()
                     stack_seq.reset()
+                    _revert_static_bin()
                 prev_mode = state.mode
 
             # -- exposure control ---------------------------------------------
             if state.mode == ViewMode.LIVE:
+                _update_live_bin()
                 if state.stream_exposure is not None:
                     _exposure_ref[0] = int(state.stream_exposure * 1_000_000)
                 else:

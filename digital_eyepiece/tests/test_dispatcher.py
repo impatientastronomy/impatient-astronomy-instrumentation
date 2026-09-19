@@ -323,7 +323,7 @@ class TestMultiCamIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Cursor-centred zoom
+# Zoom always about center (never the cursor)
 # ---------------------------------------------------------------------------
 
 class _FakeRect:
@@ -332,47 +332,36 @@ class _FakeRect:
         self.x, self.y, self.width, self.height = x, y, width, height
 
 
-class TestCursorCentredZoom:
+class TestZoomAboutCenter:
     def _make_dispatcher_with_rect(self, state, menu, rect):
         d = InputDispatcher(state, menu, zoom_step=2.0, zoom_min=1.0, zoom_max=8.0)
         d.set_img_rect(rect)
         return d
 
-    def test_zoom_at_centre_does_not_shift_center(self, state, menu):
+    def test_on_scroll_takes_no_position_argument(self, state, menu):
         rect = _FakeRect(0, 0, 800, 600)
         d = self._make_dispatcher_with_rect(state, menu, rect)
-        d.on_scroll(-1, pos=(400, 300))  # scroll down = zoom in; cursor at centre
-        assert state.zoom_center_x == pytest.approx(0.5, abs=1e-6)
-        assert state.zoom_center_y == pytest.approx(0.5, abs=1e-6)
+        d.on_scroll(-1)  # would raise TypeError if on_scroll still accepted pos
+        assert state.zoom_level == pytest.approx(2.0)
 
-    def test_zoom_in_at_right_shifts_center_right(self, state, menu):
-        rect = _FakeRect(0, 0, 800, 600)
-        d = self._make_dispatcher_with_rect(state, menu, rect)
-        d.on_scroll(-1, pos=(800, 300))  # scroll down = zoom in; cursor at right edge
-        assert state.zoom_center_x > 0.5
-
-    def test_zoom_in_at_top_left_shifts_center_up_left(self, state, menu):
-        rect = _FakeRect(0, 0, 800, 600)
-        d = self._make_dispatcher_with_rect(state, menu, rect)
-        d.on_scroll(-1, pos=(0, 0))  # scroll down = zoom in; cursor at top-left
-        assert state.zoom_center_x < 0.5
-        assert state.zoom_center_y < 0.5
-
-    def test_zoom_center_clamped_to_bounds(self, state, menu):
-        rect = _FakeRect(0, 0, 800, 600)
-        d = self._make_dispatcher_with_rect(state, menu, rect)
-        d.on_scroll(-1, pos=(800, 300))  # scroll down = zoom in; push toward right edge
-        assert state.zoom_center_x <= 1.0 - 0.5 / state.zoom_level
-        assert state.zoom_center_x >= 0.5 / state.zoom_level
-
-    def test_scroll_without_pos_does_not_move_center(self, state, menu):
+    def test_zoom_in_does_not_move_center(self, state, menu):
         rect = _FakeRect(0, 0, 800, 600)
         d = self._make_dispatcher_with_rect(state, menu, rect)
         state.zoom_center_x = 0.7
         state.zoom_center_y = 0.4
-        d.on_scroll(-1)  # scroll down = zoom in; no pos
+        d.on_scroll(-1)  # scroll down = zoom in
         assert state.zoom_center_x == pytest.approx(0.7)
         assert state.zoom_center_y == pytest.approx(0.4)
+
+    def test_zoom_out_does_not_move_center(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.zoom_level = 4.0
+        state.zoom_center_x = 0.3
+        state.zoom_center_y = 0.6
+        d.on_scroll(1)  # scroll up = zoom out, still above zoom_min
+        assert state.zoom_center_x == pytest.approx(0.3)
+        assert state.zoom_center_y == pytest.approx(0.6)
 
     def test_zoom_out_to_min_resets_center(self, state, menu):
         rect = _FakeRect(0, 0, 800, 600)
@@ -456,3 +445,82 @@ class TestRightDragPan:
         d.on_right_button_up()
         assert d._right_drag_start is None
         assert d._right_drag_total == pytest.approx(0.0)
+
+    def test_right_drag_does_not_pan_in_sky_map(self, state, menu):
+        # SkyMap panning moved to left-drag; right-drag is inert there.
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        state.zoom_center_x = 0.5
+        state.zoom_center_y = 0.5
+        d.on_right_button_down(400, 300)
+        d.on_mouse_move(440, 300, right_held=True)
+        assert state.zoom_center_x == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Left-drag pan (SkyMap only)
+# ---------------------------------------------------------------------------
+
+class TestLeftDragPan:
+    def _make_dispatcher_with_rect(self, state, menu, rect):
+        d = InputDispatcher(state, menu, zoom_step=2.0, zoom_min=1.0, zoom_max=8.0)
+        d.set_img_rect(rect)
+        return d
+
+    def test_small_move_is_a_click(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(402, 301, left_held=True)  # 3px — below threshold
+        assert d.on_left_button_up() is True
+
+    def test_large_move_is_a_drag(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(420, 300, left_held=True)  # 20px — above threshold
+        assert d.on_left_button_up() is False
+
+    def test_pan_moves_zoom_center_in_sky_map(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        state.zoom_center_x = 0.5
+        state.zoom_center_y = 0.5
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(440, 300, left_held=True)  # drag 40px right
+        assert state.zoom_center_x != pytest.approx(0.5)
+
+    def test_pan_no_effect_when_menu_open(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        state.active_menu = "menu"
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(450, 300, left_held=True)
+        assert state.zoom_center_x == pytest.approx(0.5)
+
+    def test_left_drag_does_not_pan_outside_sky_map(self, state, menu):
+        # Normal zoomed view still uses right-drag; left-drag is inert there.
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = False
+        state.zoom_level = 2.0
+        state.zoom_center_x = 0.5
+        state.zoom_center_y = 0.5
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(440, 300, left_held=True)
+        assert state.zoom_center_x == pytest.approx(0.5)
+
+    def test_drag_tracking_resets_after_button_up(self, state, menu):
+        rect = _FakeRect(0, 0, 800, 600)
+        d = self._make_dispatcher_with_rect(state, menu, rect)
+        state.all_sky_mode = True
+        d.on_left_button_down(400, 300)
+        d.on_mouse_move(450, 300, left_held=True)
+        d.on_left_button_up()
+        assert d._left_drag_start is None
+        assert d._left_drag_total == pytest.approx(0.0)

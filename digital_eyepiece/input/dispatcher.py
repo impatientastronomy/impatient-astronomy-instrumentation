@@ -7,8 +7,9 @@ directly in main.py's event loop. This dispatcher covers everything else:
 
 Mouse mapping
 -------------
-Right-drag  : pan the zoomed image
-Scroll down : zoom in (cursor-centred) / menu down
+Right-drag  : pan the zoomed image (normal live view)
+Left-drag   : pan the sky map (all_sky_mode only)
+Scroll down : zoom in (about the current view center) / menu down
 Scroll up   : zoom out / menu up
 
 Overlay auto-hide
@@ -27,7 +28,7 @@ from ..view_state import ViewState
 from .menu import Menu
 
 OVERLAY_DURATION = 5.0   # seconds the overlay stays visible after mouse move
-_RIGHT_DRAG_THRESHOLD = 5  # pixels of travel before right-hold becomes a pan
+_DRAG_THRESHOLD = 5  # pixels of travel before a button-hold becomes a pan
 
 
 class ScrollContext(Enum):
@@ -75,6 +76,8 @@ class InputDispatcher:
         self._img_rect = None                           # pygame.Rect; set via set_img_rect()
         self._right_drag_start: tuple[int, int] | None = None
         self._right_drag_total: float = 0.0            # accumulated pixel travel since button-down
+        self._left_drag_start: tuple[int, int] | None = None
+        self._left_drag_total: float = 0.0             # accumulated pixel travel since button-down
 
     def register_multi_cam(self, multi_cam) -> None:
         """Register a MultiCamZoom. Zooming out past native FOV switches cameras."""
@@ -104,13 +107,15 @@ class InputDispatcher:
 
     # -- event handlers --------------------------------------------------------
 
-    def on_scroll(self, delta: int, pos: tuple[int, int] | None = None) -> None:
+    def on_scroll(self, delta: int) -> None:
         """
         Handle a scroll-wheel event.
 
         delta > 0 : scroll up   → zoom out / menu up
         delta < 0 : scroll down → zoom in  / menu down
-        pos       : screen cursor position for cursor-centred zoom (optional)
+
+        Zoom always keeps the current view center fixed -- it never re-centers
+        on the cursor.
         """
         match self._context():
             case ScrollContext.MENU:
@@ -118,7 +123,7 @@ class InputDispatcher:
             case ScrollContext.SKY_MAP:
                 self._zoom_sky_map(delta)
             case ScrollContext.IMAGE | ScrollContext.OVERLAY:
-                self._zoom_image(-delta, pos)  # invert: scroll down = zoom in
+                self._zoom_image(-delta)  # invert: scroll down = zoom in
 
     def on_right_button_down(self, x: int, y: int) -> None:
         """Record the start of a right-button press for drag/click detection."""
@@ -130,28 +135,65 @@ class InputDispatcher:
         End right-button press.  Returns True if this was a click (not a drag)
         so the caller can open the context menu.
         """
-        was_click = self._right_drag_total < _RIGHT_DRAG_THRESHOLD
+        was_click = self._right_drag_total < _DRAG_THRESHOLD
         self._right_drag_start = None
         self._right_drag_total = 0.0
         return was_click
 
-    def on_mouse_move(self, x: int, y: int, right_held: bool = False) -> None:
+    def on_left_button_down(self, x: int, y: int) -> None:
         """
-        Handle mouse motion.  right_held=True while the right button is pressed,
-        enabling pan when the movement exceeds _RIGHT_DRAG_THRESHOLD pixels.
+        Record the start of a left-button press for drag/click detection.
+
+        Only meaningful in all_sky_mode (left-drag pans the sky map there);
+        main.py only calls this when a left-click misses every other target
+        (menu icon, edge buttons, menu items).
+        """
+        self._left_drag_start = (x, y)
+        self._left_drag_total = 0.0
+
+    def on_left_button_up(self) -> bool:
+        """End left-button press. Returns True if this was a click (not a drag)."""
+        was_click = self._left_drag_total < _DRAG_THRESHOLD
+        self._left_drag_start = None
+        self._left_drag_total = 0.0
+        return was_click
+
+    def on_mouse_move(
+        self,
+        x: int, y: int,
+        right_held: bool = False,
+        left_held: bool = False,
+    ) -> None:
+        """
+        Handle mouse motion.
+
+        right_held pans the normal (non-SkyMap) zoomed view; left_held pans
+        the sky map in all_sky_mode. Only one is ever active per mode, so
+        there's no conflict between them.
         """
         if self._state.mount_connected and not self._state.active_menu:
             self._state.overlay_active = True
             self._overlay_timer = OVERLAY_DURATION
 
-        if right_held and self._right_drag_start is not None and self._img_rect is not None:
+        if (right_held and not self._state.all_sky_mode
+                and self._right_drag_start is not None and self._img_rect is not None):
             dx = x - self._right_drag_start[0]
             dy = y - self._right_drag_start[1]
             dist = (dx * dx + dy * dy) ** 0.5
             self._right_drag_total += dist
-            if not self._state.active_menu and self._right_drag_total >= _RIGHT_DRAG_THRESHOLD:
+            if not self._state.active_menu and self._right_drag_total >= _DRAG_THRESHOLD:
                 self._pan(dx, dy)
             self._right_drag_start = (x, y)
+
+        if (left_held and self._state.all_sky_mode
+                and self._left_drag_start is not None and self._img_rect is not None):
+            dx = x - self._left_drag_start[0]
+            dy = y - self._left_drag_start[1]
+            dist = (dx * dx + dy * dy) ** 0.5
+            self._left_drag_total += dist
+            if not self._state.active_menu and self._left_drag_total >= _DRAG_THRESHOLD:
+                self._pan(dx, dy)
+            self._left_drag_start = (x, y)
 
     # -- internal helpers ------------------------------------------------------
 
@@ -164,16 +206,15 @@ class InputDispatcher:
             return ScrollContext.OVERLAY
         return ScrollContext.IMAGE
 
-    def _zoom_image(self, delta: int, pos: tuple[int, int] | None = None) -> None:
+    def _zoom_image(self, delta: int) -> None:
+        """Zoom about the current view center -- zoom_center_x/y never move here."""
         step = self._zoom_step ** abs(delta)
         old_zoom = self._state.zoom_level
         if delta > 0:
             if self._state.all_sky_mode:
                 self._state.all_sky_mode = False
                 self._state.overlay_active = self._state.overlay_pinned
-            new_zoom = min(old_zoom * step, self._zoom_max)
-            self._state.zoom_level = new_zoom
-            self._update_zoom_center(pos, old_zoom, new_zoom)
+            self._state.zoom_level = min(old_zoom * step, self._zoom_max)
         else:
             new_zoom = old_zoom / step
             if new_zoom < self._zoom_min:
@@ -185,32 +226,6 @@ class InputDispatcher:
                     self._state.zoom_center_y = 0.5
             else:
                 self._state.zoom_level = new_zoom
-                self._update_zoom_center(pos, old_zoom, new_zoom)
-
-    def _update_zoom_center(
-        self,
-        pos: tuple[int, int] | None,
-        old_zoom: float,
-        new_zoom: float,
-    ) -> None:
-        """
-        Shift zoom_center so the source pixel under pos stays at the same screen
-        position after the zoom level changes.  No-op if pos or img_rect unknown.
-        """
-        if pos is None or self._img_rect is None or old_zoom == new_zoom:
-            return
-        nx = (pos[0] - self._img_rect.x) / self._img_rect.width
-        ny = (pos[1] - self._img_rect.y) / self._img_rect.height
-        # Source pixel currently under cursor
-        src_x = self._state.zoom_center_x + (nx - 0.5) / old_zoom
-        src_y = self._state.zoom_center_y + (ny - 0.5) / old_zoom
-        # New center that maps src_x back to the same screen position
-        half_x = 0.5 / new_zoom
-        half_y = 0.5 / new_zoom
-        self._state.zoom_center_x = max(half_x, min(1.0 - half_x,
-            src_x - (nx - 0.5) / new_zoom))
-        self._state.zoom_center_y = max(half_y, min(1.0 - half_y,
-            src_y - (ny - 0.5) / new_zoom))
 
     def _zoom_sky_map(self, delta: int) -> None:
         """

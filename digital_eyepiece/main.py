@@ -2355,16 +2355,29 @@ def main() -> None:
                         cw, ch = img_rect.width, img_rect.height
                         moon_r_src = (MOON_ANGULAR_RADIUS_DEG / fov_ref[0]) * cw
                         moon_r_px  = moon_r_src * state.zoom_level
+                        # Pixel offset of the Moon's true position from where the
+                        # scope is actually pointing -- scope_alt/az and moon_alt/az
+                        # come from the auto-mode-trigger check above. Without this,
+                        # the disk was always drawn dead-center regardless of any
+                        # real pointing error (bounded small by MOON_MODE_SEPARATION_DEG,
+                        # so a flat tangent-plane approximation is accurate here).
+                        scale = moon_r_px / MOON_ANGULAR_RADIUS_DEG   # pixels per degree
+                        d_alt = moon_alt - scope_alt
+                        d_az  = ((moon_az - scope_az + 180.0) % 360.0 - 180.0) * math.cos(math.radians(scope_alt))
+                        off_x_px = d_az * scale
+                        off_y_px = -d_alt * scale
                         new_key = (
                             "moon",
                             round(state.zoom_level, 4),
                             round(state.zoom_center_x, 4),
                             round(state.zoom_center_y, 4),
+                            round(off_x_px, 1),
+                            round(off_y_px, 1),
                             cw, ch,
                         )
                         if new_key != _ov_key and not state.active_menu:
-                            moon_cx = (0.5 - state.zoom_center_x) * state.zoom_level * cw + cw / 2
-                            moon_cy = (0.5 - state.zoom_center_y) * state.zoom_level * ch + ch / 2
+                            moon_cx = (0.5 - state.zoom_center_x) * state.zoom_level * cw + cw / 2 + off_x_px
+                            moon_cy = (0.5 - state.zoom_center_y) * state.zoom_level * ch + ch / 2 + off_y_px
                             ov_arr, ov_table = compute_moon_overlay(
                                 moon_catalog,
                                 moon_cx         = moon_cx,

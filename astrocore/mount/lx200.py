@@ -127,6 +127,33 @@ class Lx200Mount(Mount):
             return False
 
     @property
+    def site_location(self) -> tuple[float, float] | None:
+        """
+        (lat_deg, lon_deg) from the mount's configured observing site, via the
+        standard LX200 :Gt# (latitude) / :Gg# (longitude) queries.
+
+        The site is typically set once in the mount's own app (e.g. the ZWO
+        app, often from the phone's GPS at setup time) -- not queried live
+        from a satellite, but it tracks wherever the mount was last set up,
+        which is what matters for a mount that travels between sites.
+
+        Classic LX200 defines longitude as positive-*west*; this is converted
+        to positive-east here to match astrocore.mount.coord's convention.
+
+        Returns None if the mount can't be queried, the reply is malformed,
+        or the site reads as (0, 0) -- "null island", never a real observing
+        site for this app, and the standard unconfigured-site sentinel.
+        """
+        try:
+            lat = _parse_site_coord(self._cmd(":Gt#"))
+            lon = -_parse_site_coord(self._cmd(":Gg#"))
+        except Exception:
+            return None
+        if lat == 0.0 and lon == 0.0:
+            return None
+        return lat, lon
+
+    @property
     def is_slewing(self) -> bool:
         """True while the mount is executing a slew.
 
@@ -326,4 +353,21 @@ def _parse_dec(s: str) -> float:
     s       = s.lstrip("+-")
     deg_str, rest = s.split("*")
     min_str, sec_str = rest.split(":")
+    return sign * (float(deg_str) + float(min_str) / 60.0 + float(sec_str) / 3600.0)
+
+
+def _parse_site_coord(s: str) -> float:
+    """
+    Parse an LX200 site-coordinate reply to decimal degrees: 'sDD*MM' or
+    'sDD*MM:SS'. Unlike RA/Dec replies, seconds are commonly omitted for
+    site latitude/longitude, so -- unlike _parse_dec() -- this tolerates
+    'sDD*MM' with no ':SS' part at all.
+    """
+    sign    = -1.0 if s.startswith("-") else 1.0
+    s       = s.lstrip("+-")
+    deg_str, rest = s.split("*")
+    if ":" in rest:
+        min_str, sec_str = rest.split(":")
+    else:
+        min_str, sec_str = rest, "0"
     return sign * (float(deg_str) + float(min_str) / 60.0 + float(sec_str) / 3600.0)

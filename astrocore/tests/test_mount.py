@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 import pytest
 
 from astrocore.mount.coord import altaz_to_radec, radec_to_altaz
-from astrocore.mount.lx200 import Lx200Mount, _dec_str, _parse_dec, _parse_ra, _ra_str
+from astrocore.mount.lx200 import (
+    Lx200Mount, _dec_str, _parse_dec, _parse_ra, _parse_site_coord, _ra_str,
+)
 
 # Observer location used across tests
 LAT = 38.44
@@ -222,3 +224,61 @@ class TestQueryValidatedRetry:
             ra = mount._get_ra()
         assert ra == pytest.approx(6.5)
         assert not caplog.records
+
+
+# ── _parse_site_coord ─────────────────────────────────────────────────────────
+
+class TestParseSiteCoord:
+    def test_degrees_minutes_no_seconds(self):
+        assert _parse_site_coord("+37*51") == pytest.approx(37.85)
+
+    def test_no_explicit_sign_is_positive(self):
+        assert _parse_site_coord("37*51") == pytest.approx(37.85)
+
+    def test_negative_sign(self):
+        assert _parse_site_coord("-122*29") == pytest.approx(-122.4833333, abs=1e-6)
+
+    def test_with_seconds(self):
+        assert _parse_site_coord("-122*29:13") == pytest.approx(-122.4869444, abs=1e-6)
+
+    def test_zero(self):
+        assert _parse_site_coord("+00*00") == pytest.approx(0.0)
+
+
+# ── Lx200Mount.site_location ────────────────────────────────────────────────
+
+class TestSiteLocation:
+    def test_reads_lat_and_converts_lon_west_to_east(self):
+        # LX200 :Gg# is positive-west; site_location must return positive-east
+        # to match astrocore.mount.coord's convention.
+        sock  = FakeSocket(responses=[b"+37*51#", b"+122*29#"])
+        mount = _mount_with_socket(sock)
+        lat, lon = mount.site_location
+        assert lat == pytest.approx(37.85)
+        assert lon == pytest.approx(-122.4833333, abs=1e-6)
+
+    def test_east_longitude_site_becomes_positive(self):
+        # A site east of Greenwich reports a negative (west-convention) reply;
+        # converted, it must come back positive.
+        sock  = FakeSocket(responses=[b"+51*30#", b"-00*07#"])
+        mount = _mount_with_socket(sock)
+        lat, lon = mount.site_location
+        assert lat == pytest.approx(51.5)
+        assert lon == pytest.approx(0.1166667, abs=1e-6)
+
+    def test_unconfigured_site_zero_zero_returns_none(self):
+        sock  = FakeSocket(responses=[b"+00*00#", b"+00*00#"])
+        mount = _mount_with_socket(sock)
+        assert mount.site_location is None
+
+    def test_malformed_reply_returns_none(self):
+        sock  = FakeSocket(responses=[b"not a coordinate#", b"+122*29#"])
+        mount = _mount_with_socket(sock)
+        assert mount.site_location is None
+
+    def test_not_connected_returns_none(self):
+        mount = Lx200Mount("dummy-host")
+        # _ensure() would try a real socket.connect() -- not connected, no
+        # socket set, so the property must fail closed to None, not raise.
+        assert mount._sock is None
+        assert mount.site_location is None

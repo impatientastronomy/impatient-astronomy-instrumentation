@@ -58,3 +58,18 @@ class Mount(ABC):
         as always tracking.  Override in concrete classes that can query state.
         """
         return True
+
+    @property
+    def site_location(self) -> tuple[float, float] | None:
+        """(lat_deg, lon_deg) the mount reports for its configured observing
+        site, or None if the driver can't query it or none is configured.
+
+        Longitude is positive-east, matching this codebase's convention
+        (see astrocore.mount.coord) -- concrete drivers must convert from
+        whatever convention their protocol uses.
+
+        Default returns None so drivers that don't implement this are
+        treated as not knowing their location; callers should fall back to
+        a configured default. Override in concrete classes that can query it.
+        """
+        return None

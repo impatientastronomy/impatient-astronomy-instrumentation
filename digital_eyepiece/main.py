@@ -1281,11 +1281,15 @@ def main() -> None:
                     tracking = mount.is_tracking
                 except Exception:
                     tracking = False
+                try:
+                    site = mount.site_location
+                except Exception:
+                    site = None
                 pygame.event.post(pygame.event.Event(
-                    _MOUNT_CONNECT_DONE, mount=mount, tracking=tracking, error=None))
+                    _MOUNT_CONNECT_DONE, mount=mount, tracking=tracking, site=site, error=None))
             except Exception as exc:
                 pygame.event.post(pygame.event.Event(
-                    _MOUNT_CONNECT_DONE, mount=None, tracking=False, error=str(exc)))
+                    _MOUNT_CONNECT_DONE, mount=None, tracking=False, site=None, error=str(exc)))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1943,6 +1947,14 @@ def main() -> None:
                         _mount_connect_failed[0] = False
                         if not event.tracking:
                             logging.info("Mount connected but not tracking — overlay will use north horizon")
+                        if event.site is not None:
+                            lat, lon = event.site
+                            logging.info(
+                                "Using mount-reported site location: lat=%.4f lon=%.4f", lat, lon)
+                        else:
+                            logging.info(
+                                "Mount did not report a site location; using configuration.yaml "
+                                "(lat=%.4f lon=%.4f)", lat, lon)
 
                 elif event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_q, pygame.K_ESCAPE):
@@ -2080,8 +2092,8 @@ def main() -> None:
                                     d_alt = -(state.zoom_center_y - 0.5) * fov * aspect_m
                                 else:
                                     fov   = fov_ref[0] / state.zoom_level
-                                    d_az  = (state.zoom_center_x - 0.5) * fov_ref[0]
-                                    d_alt = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect_m
+                                    d_az  = (state.zoom_center_x - 0.5) * fov
+                                    d_alt = -(state.zoom_center_y - 0.5) * fov * aspect_m
                                 center_alt = alt_m + d_alt
                                 center_az  = az_m  + d_az
                                 click_az   = center_az  + (nx - 0.5) * fov
@@ -2379,8 +2391,8 @@ def main() -> None:
                             img_rect.width, img_rect.height,
                         )
                         if new_key != _ov_key and not state.active_menu:
-                            d_az  = (state.zoom_center_x - 0.5) * fov_ref[0]
-                            d_alt = -(state.zoom_center_y - 0.5) * fov_ref[0] * aspect
+                            d_az  = (state.zoom_center_x - 0.5) * eff_fov
+                            d_alt = -(state.zoom_center_y - 0.5) * eff_fov * aspect
                             ov_arr, ov_table = compute_overlay(
                                 catalog + _solar_system_catalog_entries(),
                                 fov_deg     = eff_fov,

@@ -26,9 +26,13 @@ Usage
     python acquire_flats.py -f 0
     python acquire_flats.py -f 1 --target-adu 25000 -n 32
     python acquire_flats.py -f 3 --config /path/to/configuration.yaml
+    python acquire_flats.py -f 0 -b 2      # override binning to 2x2 (needs a
+                                            # matching bin=2 100us dark already
+                                            # captured via acquire_darks.py -b 2)
 """
 
 import argparse
+import dataclasses
 import sys
 import threading
 from datetime import datetime, timezone
@@ -78,6 +82,12 @@ def _parse_args() -> argparse.Namespace:
         "-n", "--frames",
         type=int, default=16, metavar="N",
         help="Number of frames to average (default: 16)",
+    )
+    p.add_argument(
+        "-b", "--bin",
+        type=int, default=None, metavar="N",
+        help="Override the binning from configuration.yaml (e.g. 2 for 2x2). "
+             "Must match the bin of the 100us dark used for bias correction.",
     )
     p.add_argument(
         "--config", type=Path, default=_DEFAULT_CONFIG, metavar="PATH",
@@ -295,6 +305,7 @@ def main() -> None:
     print(f"\nFilter    : {args.filter} ({filter_name})")
     print(f"Target ADU: {args.target_adu}")
     print(f"Frames    : {args.frames} per camera")
+    print(f"Bin       : {args.bin if args.bin is not None else 'from configuration.yaml'}")
     print(f"Output    : {flats_dir}")
 
     try:
@@ -311,6 +322,8 @@ def main() -> None:
 
     for c in cameras:
         cam_config = config.get_config(c["camera_id"])
+        if args.bin is not None:
+            cam_config = dataclasses.replace(cam_config, bin=args.bin)
         t = threading.Thread(
             target = _acquire_camera,
             args   = (

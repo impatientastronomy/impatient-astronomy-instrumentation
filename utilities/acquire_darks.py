@@ -19,9 +19,11 @@ Usage
     python acquire_darks.py -e 0.1 1 2 5 10
     python acquire_darks.py -e 2 5 -n 20
     python acquire_darks.py -e 0.1 --config /path/to/configuration.yaml
+    python acquire_darks.py -e 0.0001 1 2 -b 2      # override binning to 2x2
 """
 
 import argparse
+import dataclasses
 import sys
 import threading
 from datetime import datetime, timezone
@@ -60,6 +62,13 @@ def _parse_args() -> argparse.Namespace:
         "-n", "--frames",
         type=int, default=10, metavar="N",
         help="Number of frames to average per exposure (default: 10)",
+    )
+    p.add_argument(
+        "-b", "--bin",
+        type=int, default=None, metavar="N",
+        help="Override the binning from configuration.yaml (e.g. 2 for 2x2). "
+             "Darks are matched to science frames by bin, so capture a separate "
+             "set for each binning you actually shoot with.",
     )
     p.add_argument(
         "--config", type=Path, default=_DEFAULT_CONFIG, metavar="PATH",
@@ -198,6 +207,7 @@ def main() -> None:
 
     print(f"\nExposures : {args.exposures} s")
     print(f"Frames    : {args.frames} per exposure")
+    print(f"Bin       : {args.bin if args.bin is not None else 'from configuration.yaml'}")
     print(f"Output    : {darks_dir}")
 
     try:
@@ -215,6 +225,8 @@ def main() -> None:
 
     for c in cameras:
         cam_config = config.get_config(c["camera_id"])
+        if args.bin is not None:
+            cam_config = dataclasses.replace(cam_config, bin=args.bin)
         t = threading.Thread(
             target  = _acquire_camera,
             args    = (

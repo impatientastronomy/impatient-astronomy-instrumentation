@@ -121,6 +121,7 @@ class Lx200Mount(Mount):
     def is_tracking(self) -> bool:
         """Query tracking rate via :GT#; True if rate > 0 (mount is tracking)."""
         try:
+            self._ensure()
             rate = self._cmd(":GT#")
             return float(rate) > 0.1
         except Exception:
@@ -145,6 +146,7 @@ class Lx200Mount(Mount):
         site for this app, and the standard unconfigured-site sentinel.
         """
         try:
+            self._ensure()
             lat = _parse_site_coord(self._cmd(":Gt#"))
             lon = -_parse_site_coord(self._cmd(":Gg#"))
         except Exception:

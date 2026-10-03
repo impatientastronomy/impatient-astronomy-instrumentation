@@ -415,6 +415,7 @@ def _build_context_menu(
     in_sky_map: bool = False,
     on_exit_sky_map=None,
     cam_select_items: list | None = None,
+    moon_mode: bool = False,
 ) -> Menu:
     m = Menu()
     if near_object:
@@ -423,7 +424,10 @@ def _build_context_menu(
         m.add(MenuItem("Focus here", action=on_focus))
     if mount_connected:
         m.add(MenuItem("Slew here", action=on_slew))
-    if near_object:
+    if near_object or moon_mode:
+        # In Moon-map mode, sync always targets the Moon's own current
+        # position regardless of which crater (if any) was clicked near --
+        # craters have no RA/Dec of their own, see _do_sync().
         m.add(MenuItem("Sync here", action=on_sync if mount_connected else None))
     if not in_sky_map and cam_select_items is not None:
         submenu = list(cam_select_items)
@@ -2114,10 +2118,19 @@ def main() -> None:
 
                             def _do_sync() -> None:
                                 nonlocal alert_timer, alert_message
-                                if near is None or mount_holder[0] is None:
+                                if mount_holder[0] is None:
                                     return
-                                ra_h    = near["ra_deg"] / 15.0   # degrees → hours
-                                dec_deg = near["dec_deg"]
+                                if state.moon_mode:
+                                    # Always sync to the Moon's own current position, not
+                                    # whichever crater (if any) happened to be near the
+                                    # click -- craters have no RA/Dec of their own, see
+                                    # compute_moon_overlay()'s table.
+                                    ra_h, dec_deg = moon_radec()
+                                elif near is not None and "ra_deg" in near:
+                                    ra_h    = near["ra_deg"] / 15.0   # degrees → hours
+                                    dec_deg = near["dec_deg"]
+                                else:
+                                    return
                                 try:
                                     mount_holder[0].sync(ra_h, dec_deg)
                                     state.mount_tracking = True
@@ -2165,6 +2178,7 @@ def main() -> None:
                                     on_sky_map        = _enter_sky_map,
                                     mount_connected   = state.mount_connected,
                                     cam_select_items  = _cam_sel_items,
+                                    moon_mode         = state.moon_mode,
                                 )
                             state.context_menu_pos = event.pos
                             _open_menu("context")

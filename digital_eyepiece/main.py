@@ -1088,9 +1088,12 @@ def _render_focus_waiting(surface: pygame.Surface, win_w: int, top_y: int) -> No
     surface.blit(label, (win_w // 2 - label.get_width() // 2, top_y + 8))
 
 
-def _render_alert(surface: pygame.Surface, text: str, win_w: int, win_h: int) -> None:
+def _render_alert(
+    surface: pygame.Surface, text: str, win_w: int, win_h: int,
+    color: tuple = RED,
+) -> None:
     f = _font(16)
-    label = f.render(text, True, RED)
+    label = f.render(text, True, color)
     x = win_w // 2 - label.get_width() // 2
     y = win_h // 2 - label.get_height() // 2
     bg = pygame.Surface((label.get_width() + 20, label.get_height() + 10))
@@ -1254,7 +1257,7 @@ def main() -> None:
             context_menu_ref[0].reset()
 
     def _connect_mount() -> None:
-        nonlocal alert_timer, alert_message
+        nonlocal alert_timer, alert_message, alert_color
         _mount_connect_failed[0] = False
         if args.vmount:
             from astrocore.mount.virtual_mount import VirtualMount
@@ -1268,6 +1271,7 @@ def main() -> None:
             # connect failure is, instead of doing nothing with no feedback.
             _mount_connect_failed[0] = True
             alert_message = "No mount driver configured"
+            alert_color   = RED
             alert_timer   = ALERT_DURATION
             return
         state.mount_connecting = True
@@ -1843,13 +1847,29 @@ def main() -> None:
             return cam_w_ref[0] / img_rect.width
 
         def _set_live_bin(target_bin: int) -> None:
-            """Reconfigure the live camera to bin=2 (full sensor) or bin=1 (centered 50% crop)."""
+            """
+            Reconfigure the live camera to bin=2 (full sensor) or bin=1 (centered
+            50% crop).
+
+            _live_bin[0] is 2, 1, or 0 -- the last meaning "static/accumulate
+            bin is active, not tracked by this dynamic system" (see
+            _revert_static_bin()). 0 never equals 1 or 2, so returning to LIVE
+            after stacking always falls through and reconfigures, even if the
+            static bin happened to also be 1 or 2.
+            """
             if not isinstance(grabber.cam, ZwoAsiCamera) or _live_bin[0] == target_bin:
                 return
+            was_cropped = _live_bin[0] == 1
             _stop_and_reset_grab()
             if target_bin == 2:
                 grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=2)
                 state.zoom_level = min(_zoom_max, state.zoom_level * 2)
+                if was_cropped:
+                    # Only restore if we're actually leaving the halved-FOV crop --
+                    # coming from static/accumulate (sentinel 0), fov_ref[0] was
+                    # never touched and is already correct; doubling it here would
+                    # overcorrect.
+                    fov_ref[0] *= 2
             else:
                 sensor_w = grabber.cam.info.sensor_width_px
                 sensor_h = grabber.cam.info.sensor_height_px
@@ -1859,6 +1879,15 @@ def main() -> None:
                 y = ((sensor_h - crop_h) // 2) & ~1
                 grabber.cam.set_roi(x=x, y=y, width=crop_w, height=crop_h, bin=1)
                 state.zoom_level = max(_zoom_min, state.zoom_level / 2)
+                # Same pixel count as bin=2 (see module docs above), but now covering
+                # half the linear sensor extent -- the real FOV is genuinely halved,
+                # not just digitally zoomed. fov_ref[0] has to track that, or every
+                # consumer (Moon-map disk/crater scale, the normal overlay's effective
+                # FOV, the moon-mode auto-trigger threshold) computes against a FOV
+                # that's 2x too wide once this crop is active. Always halve here --
+                # both prior states (2, or static/accumulate's sentinel 0) are
+                # full-sensor, so fov_ref[0] is at the un-halved base value either way.
+                fov_ref[0] /= 2
             state.zoom_center_x = 0.5
             state.zoom_center_y = 0.5
             _live_bin[0] = target_bin
@@ -1879,15 +1908,26 @@ def main() -> None:
                 _set_live_bin(2)
 
         def _revert_static_bin() -> None:
-            """Stacking always uses the configured (static) bin -- undo any live dynamic bin/crop."""
+            """
+            Stacking always uses the configured (static) bin, full sensor --
+            undo any live dynamic bin/crop.
+
+            Can't compare _live_bin[0] to static_bin to skip redundant work the
+            way _set_live_bin() does: static_bin may itself be 1, which would
+            collide with _live_bin[0]==1 meaning "dynamic 50% crop" -- a
+            completely different ROI despite the same bin number. So this
+            always reconfigures, and always sets the sentinel 0 (never equal to
+            a real bin) rather than static_bin, so _set_live_bin() can't
+            mistake "already there" either when LIVE mode resumes.
+            """
             if not isinstance(grabber.cam, ZwoAsiCamera):
                 return
+            if _live_bin[0] == 1:
+                fov_ref[0] *= 2   # leaving the halved-FOV crop; restore the real FOV
             static_bin = cam_config_ref[0].bin
-            if _live_bin[0] == static_bin:
-                return
             _stop_and_reset_grab()
             grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=static_bin)
-            _live_bin[0] = static_bin
+            _live_bin[0] = 0
             _restart_grab()
 
         last_surface: pygame.Surface | None = None
@@ -1901,6 +1941,7 @@ def main() -> None:
 
         alert_timer   = 0.0
         alert_message = ""
+        alert_color   = RED
         ov_table: list[dict] = []
 
         # Overlay cache — recomputed only when inputs change or menu closes
@@ -1943,6 +1984,7 @@ def main() -> None:
                         logging.warning("Mount connect failed: %s", event.error)
                         _mount_connect_failed[0] = True
                         alert_message = f"Mount connect failed: {event.error}"
+                        alert_color   = RED
                         alert_timer   = ALERT_DURATION
                     else:
                         mount_holder[0] = event.mount
@@ -2105,19 +2147,21 @@ def main() -> None:
                                 return altaz_to_radec(click_alt, click_az, lat, lon)
 
                             def _do_slew() -> None:
-                                nonlocal alert_timer, alert_message
+                                nonlocal alert_timer, alert_message, alert_color
                                 coords = _cursor_to_radec()
                                 if coords is None:
                                     return
                                 try:
                                     mount_holder[0].slew_to(*coords)
                                     alert_message = "Caution: Mount is moving"
+                                    alert_color   = AMBER
                                 except Exception as exc:
                                     alert_message = f"Slew failed: {exc}"
+                                    alert_color   = RED
                                 alert_timer = ALERT_DURATION
 
                             def _do_sync() -> None:
-                                nonlocal alert_timer, alert_message
+                                nonlocal alert_timer, alert_message, alert_color
                                 if mount_holder[0] is None:
                                     return
                                 if state.moon_mode:
@@ -2135,8 +2179,10 @@ def main() -> None:
                                     mount_holder[0].sync(ra_h, dec_deg)
                                     state.mount_tracking = True
                                     alert_message = "Mount synced"
+                                    alert_color   = GREEN
                                 except Exception as exc:
                                     alert_message = f"Sync failed: {exc}"
+                                    alert_color   = RED
                                 alert_timer = ALERT_DURATION
 
                             # _enter_sky_map / _exit_sky_map are defined once, outer
@@ -2461,7 +2507,7 @@ def main() -> None:
 
             # Alert overlay
             if alert_timer > 0:
-                _render_alert(screen, alert_message, win_w, win_h)
+                _render_alert(screen, alert_message, win_w, win_h, color=alert_color)
 
             # -- lower-left status stack (drawn last, low-contrast, easy to ignore) --
             status_lines: list[str] = []

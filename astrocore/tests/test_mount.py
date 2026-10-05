@@ -8,6 +8,7 @@ Run with: pytest astrocore/tests/test_mount.py -v
 import logging
 import math
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -282,3 +283,52 @@ class TestSiteLocation:
         # socket set, so the property must fail closed to None, not raise.
         assert mount._sock is None
         assert mount.site_location is None
+
+
+# ── reconnect-on-dead-connection (_send) ─────────────────────────────────────
+#
+# A dropped TCP connection (e.g. a WiFi hiccup) leaves self._sock non-None --
+# only a failed write (EPIPE/ECONNRESET) reveals it. _send() must detect that
+# and transparently reconnect-and-retry once, rather than leaving every
+# subsequent command broken until the user manually reconnects.
+
+class TestSendReconnect:
+    def test_reconnects_and_retries_once_after_broken_pipe(self):
+        dead_sock = FakeSocket()
+        dead_sock.sendall = MagicMock(side_effect=BrokenPipeError(32, "Broken pipe"))
+        mount = _mount_with_socket(dead_sock)
+
+        fresh_sock = FakeSocket(responses=[b"1"])
+
+        def fake_connect():
+            mount._sock = fresh_sock
+        mount.connect = fake_connect
+
+        result = mount._cmd1(":MS#")
+
+        assert result == "1"
+        dead_sock.sendall.assert_called_once()
+        assert fresh_sock.sent == [b":MS#"]
+
+    def test_raises_if_retry_also_fails(self):
+        dead_sock = FakeSocket()
+        dead_sock.sendall = MagicMock(side_effect=BrokenPipeError(32, "Broken pipe"))
+        mount = _mount_with_socket(dead_sock)
+
+        still_dead_sock = FakeSocket()
+        still_dead_sock.sendall = MagicMock(side_effect=BrokenPipeError(32, "Broken pipe"))
+
+        def fake_connect():
+            mount._sock = still_dead_sock
+        mount.connect = fake_connect
+
+        with pytest.raises(BrokenPipeError):
+            mount._cmd1(":MS#")
+
+    def test_no_reconnect_when_send_succeeds(self):
+        sock  = FakeSocket(responses=[b"1"])
+        mount = _mount_with_socket(sock)
+        mount.connect = MagicMock(side_effect=AssertionError("should not reconnect"))
+
+        result = mount._cmd1(":MS#")
+        assert result == "1"

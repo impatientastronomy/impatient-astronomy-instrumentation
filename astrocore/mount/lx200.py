@@ -167,7 +167,7 @@ class Lx200Mount(Mount):
         if self._sock is None:
             raise MountError("Not connected")
         self._drain()
-        self._sock.sendall(b":D#")
+        self._send(b":D#")
         data = b""
         self._sock.settimeout(0.5)
         try:
@@ -279,12 +279,29 @@ class Lx200Mount(Mount):
         finally:
             self._sock.settimeout(prev_timeout)
 
+    def _send(self, data: bytes) -> None:
+        """
+        Send bytes to the mount, reconnecting and retrying once if the
+        connection has silently died (e.g. EPIPE/ECONNRESET after a WiFi
+        drop). The socket object itself stays non-None through a dead
+        connection -- _ensure() alone can't detect this, only a failed
+        write can, so this is the one place that actually recovers from it.
+        """
+        try:
+            self._sock.sendall(data)
+            return
+        except OSError as exc:
+            log.warning("Mount connection appears dead (%s); reconnecting", exc)
+        self.disconnect()
+        self.connect()
+        self._sock.sendall(data)
+
     def _cmd(self, cmd: str) -> str:
         """Send command, read '#'-terminated response, return stripped string."""
         if self._sock is None:
             raise MountError("Not connected")
         self._drain()
-        self._sock.sendall(cmd.encode())
+        self._send(cmd.encode())
         data    = b""
         deadline = time.monotonic() + self._timeout
         while b"#" not in data:
@@ -302,7 +319,7 @@ class Lx200Mount(Mount):
         if self._sock is None:
             raise MountError("Not connected")
         self._drain()
-        self._sock.sendall(cmd.encode())
+        self._send(cmd.encode())
         self._sock.settimeout(self._timeout)
         byte = self._sock.recv(1)
         return byte.decode(errors="replace").strip() if byte else ""
@@ -312,7 +329,7 @@ class Lx200Mount(Mount):
         if self._sock is None:
             raise MountError("Not connected")
         self._drain()
-        self._sock.sendall(cmd.encode())
+        self._send(cmd.encode())
 
 
 # ── LX200 string codec ────────────────────────────────────────────────────────

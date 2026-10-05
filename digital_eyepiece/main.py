@@ -121,6 +121,11 @@ TARGET_FPS        = 60
 ALERT_DURATION    = 3.0
 SAVE_FLASH_DURATION = 0.6   # seconds the Save button flashes green after a successful save
 
+# Longest legitimate single grab_frame() call is a 20s exposure plus its 5s
+# timeout margin (~25s); anything beyond that means the call never returned
+# (a true hang inside the camera driver), not just a long exposure in progress.
+GRAB_STALL_THRESHOLD_S = 30.0
+
 FOCUS_ROI_HALF = 200
 
 # Automatic Moon-map switch: while Overlay is on, moon feature labels replace
@@ -1719,6 +1724,15 @@ def main() -> None:
         _exposure_ref = [int(ae.current * 1_000_000)]
         _focus_hardware_roi: bool = False
 
+        # Updated every time grab_frame() returns, regardless of status -- a
+        # legitimate long exposure still returns WORKING/TIMEOUT periodically,
+        # so this only goes stale if a call into the camera driver genuinely
+        # never returns (a true hang, e.g. stuck inside the SDK), which no
+        # amount of try/except around the loop can catch or recover from.
+        # The render loop watches this to surface a visible warning instead
+        # of silently freezing with no indication anything is wrong.
+        _worker_heartbeat: list[float] = [time.monotonic()]
+
         def _make_grab_worker(stop_event: threading.Event) -> threading.Thread:
             def _worker() -> None:
                 configured_us: int | None = None
@@ -1733,6 +1747,7 @@ def main() -> None:
                             demosaic    = grabber.pattern is not None,
                             median      = True,
                         )
+                        _worker_heartbeat[0] = time.monotonic()
                         if result.status == GrabStatus.WORKING:
                             time.sleep(0.001)
                             continue
@@ -1942,6 +1957,7 @@ def main() -> None:
         alert_timer   = 0.0
         alert_message = ""
         alert_color   = RED
+        _cam_stalled  = False  # tracks whether the current stall episode has already been logged
         ov_table: list[dict] = []
 
         # Overlay cache — recomputed only when inputs change or menu closes
@@ -1966,6 +1982,20 @@ def main() -> None:
                 alert_timer -= dt
             if _save_flash_timer[0] > 0:
                 _save_flash_timer[0] = max(0.0, _save_flash_timer[0] - dt)
+
+            if _grab_thread is not None:
+                _stall_elapsed = time.monotonic() - _worker_heartbeat[0]
+                if _stall_elapsed > GRAB_STALL_THRESHOLD_S:
+                    if not _cam_stalled:
+                        _cam_stalled = True
+                        logging.warning(
+                            "Grab worker unresponsive for %.0fs; camera may be hung", _stall_elapsed)
+                    alert_message = f"Camera not responding ({_stall_elapsed:.0f}s)"
+                    alert_color   = RED
+                    alert_timer   = ALERT_DURATION  # re-armed every frame while stalled
+                elif _cam_stalled:
+                    _cam_stalled = False
+                    logging.info("Grab worker responsive again after stall")
 
             for _edge, _zone in _edge_reveal_zones.items():
                 if _edge_reveal[_edge] > 0:

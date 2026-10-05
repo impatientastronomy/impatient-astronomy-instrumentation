@@ -203,7 +203,14 @@ class ConstellationStacker:
         Returns True if the frame was added.
         """
         img = frame.astype(np.float32)
-        
+
+        if self._stack_sum is not None and img.shape != self._stack_sum.shape:
+            # A frame whose shape doesn't match the running stack -- e.g. a
+            # stale frame from before an ROI/bin change slipping through.
+            # Treat it like a failed registration rather than crashing.
+            self._skipped_count += 1
+            return False
+
         if self._stack_sum is None:
             self._stack_sum   = img.copy()
             self._frame_count = 1

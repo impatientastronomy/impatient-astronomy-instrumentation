@@ -1785,6 +1785,15 @@ def main() -> None:
             if _grab_thread is not None:
                 _grab_thread.join(timeout=5.0)
             grabber.reset()
+            # The stopping worker can complete one more write to _latest_frame[0]
+            # (captured under the OLD ROI) in its final iteration before it sees
+            # the stop flag. Left in place, the render loop hands that stale,
+            # wrong-shaped frame to the just-reset stacker as frame #1, which
+            # then breaks on frame #2 once the new worker's correctly-shaped
+            # frames start arriving. Join() above guarantees the old thread has
+            # fully exited, so clearing here can't race a concurrent write.
+            with _frame_lock:
+                _latest_frame[0] = None
 
         def _restart_grab() -> None:
             nonlocal _stop_grab, _grab_thread

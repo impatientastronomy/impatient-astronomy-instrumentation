@@ -288,6 +288,20 @@ class TestDarkPipelineIntegration:
         result = grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
         assert result.calibrated is True
 
+    def test_shape_mismatch_skips_instead_of_crashing(self, grabber, camera):
+        # A cached dark left over from a different ROI/crop (e.g. after a bin
+        # switch the caller forgot to invalidate) must not crash the grab --
+        # it should be treated like "no usable calibration" instead.
+        grabber.imDark = np.full((50, 50), 200, dtype=np.uint16)
+        grabber.current_dark = "C1_Ha_2e6us_20C_001.tif"
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=True, flat=False, dpc=False, demosaic=False)
+        assert result.status == GrabStatus.SUCCESS
+        assert result.calibrated is False
+        assert result.frame.data[0, 0] == 1000  # raw value, dark not subtracted
+
 
 # ---------------------------------------------------------------------------
 # Flat pipeline integration
@@ -318,6 +332,18 @@ class TestFlatPipelineIntegration:
         camera.set_status(ExposureStatus.SUCCESS)
         result = grabber.grab_frame(dark=False, flat=False, dpc=False, demosaic=False)
         assert result.calibrated is True
+
+    def test_shape_mismatch_skips_instead_of_crashing(self, grabber, camera):
+        # A cached flat left over from a different ROI/crop must not crash the
+        # grab -- it should be treated like "no usable calibration" instead.
+        grabber.imFlat = np.full((50, 50), 2000, dtype=np.float32)
+        camera.set_status(ExposureStatus.IDLE)
+        grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=False, flat=True, dpc=False, demosaic=False)
+        assert result.status == GrabStatus.SUCCESS
+        assert result.calibrated is False
+        assert result.frame.data[0, 0] == 1000  # raw value, flat not applied
 
 
 # ---------------------------------------------------------------------------

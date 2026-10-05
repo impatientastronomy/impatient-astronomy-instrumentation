@@ -251,10 +251,25 @@ class FrameGrabber:
             best = self._find_best_dark_row(meta)
             if best is not None and best["filename"] != self.current_dark:
                 raw = _read_calibration(best["path"], meta, np.uint16)
-                self.imDark = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
-                self.current_dark = best["filename"]
-                self.current_dark_flip = best["flip"]
-                self.imDPC = 0
+                candidate = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
+                if candidate.shape == imR.shape:
+                    self.imDark = candidate
+                    self.current_dark = best["filename"]
+                    self.current_dark_flip = best["flip"]
+                    self.imDPC = 0
+            if self.imDark.shape != imR.shape:
+                # The library is matched on bin/camera/filter/exposure/temperature
+                # only -- it has no way to know the live ROI's actual geometry, so
+                # a shape mismatch here means either a cache the caller forgot to
+                # invalidate on an ROI change, or a library entry recorded under
+                # this bin at a different crop. Either way, treat it as "no usable
+                # calibration" rather than crashing the capture loop.
+                if "dark" not in self._warned_missing:
+                    log.warning(
+                        "Cached dark shape %s does not match frame shape %s; "
+                        "skipping dark subtraction", self.imDark.shape, imR.shape)
+                    self._warned_missing.add("dark")
+                return imR, False
             return _subtract_dark(imR, self.imDark), True
 
         # Not yet loaded — find best match in the dark library.
@@ -266,7 +281,15 @@ class FrameGrabber:
                 self._warned_missing.add("dark")
             return imR, False
         raw = _read_calibration(best["path"], meta, np.uint16)
-        self.imDark = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
+        candidate = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
+        if candidate.shape != imR.shape:
+            if "dark" not in self._warned_missing:
+                log.warning(
+                    "Dark %s shape %s does not match frame shape %s; "
+                    "skipping dark subtraction", best["filename"], candidate.shape, imR.shape)
+                self._warned_missing.add("dark")
+            return imR, False
+        self.imDark = candidate
         self.current_dark = best["filename"]
         self.current_dark_flip = best["flip"]
         self.imDPC = 0
@@ -280,6 +303,13 @@ class FrameGrabber:
             dpc_path = Path(self.cal_path) / "DPC" / self.current_dark
             raw = _read_calibration(dpc_path, meta, np.uint8)
             mask = _apply_flip_correction(raw, self.current_dark_flip, _flip_int(meta)).astype(bool)
+            if mask.shape != imR.shape[:2]:
+                if "dpc" not in self._warned_missing:
+                    log.warning(
+                        "DPC mask shape %s does not match frame shape %s; "
+                        "skipping dead-pixel correction", mask.shape, imR.shape[:2])
+                    self._warned_missing.add("dpc")
+                return imR
             # Zero the 2-pixel border so 2nd-neighbor lookups are always in bounds
             mask[:2, :]  = False
             mask[-2:, :] = False
@@ -287,6 +317,8 @@ class FrameGrabber:
             mask[:, -2:] = False
             self.imDPC = mask
 
+        if self.imDPC.shape != imR.shape[:2]:
+            return imR
         return _fix_dead_pixels_mask(imR, self.imDPC)
 
     def _pipeline_flat(self, imR: np.ndarray, meta) -> tuple[np.ndarray, bool]:
@@ -310,8 +342,23 @@ class FrameGrabber:
                 return imR, False
             best = matching.iloc[0]
             raw = _read_calibration(best["path"], meta, np.float32)
-            self.imFlat = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
+            candidate = _apply_flip_correction(raw, best["flip"], _flip_int(meta))
+            if candidate.shape != imR.shape:
+                if "flat" not in self._warned_missing:
+                    log.warning(
+                        "Flat %s shape %s does not match frame shape %s; "
+                        "skipping flat-field correction", best["path"], candidate.shape, imR.shape)
+                    self._warned_missing.add("flat")
+                return imR, False
+            self.imFlat = candidate
 
+        if self.imFlat.shape != imR.shape:
+            if "flat" not in self._warned_missing:
+                log.warning(
+                    "Cached flat shape %s does not match frame shape %s; "
+                    "skipping flat-field correction", self.imFlat.shape, imR.shape)
+                self._warned_missing.add("flat")
+            return imR, False
         return _apply_flat_field(imR, self.imFlat), True
 
     # -- dark library helpers -----------------------------------------------

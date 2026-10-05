@@ -1876,14 +1876,26 @@ def main() -> None:
                 return
             was_cropped = _live_bin[0] == 1
             _stop_and_reset_grab()
+            # set_roi() below changes the frame's pixel dimensions (full sensor
+            # <-> 50% crop) without the grabber knowing -- its cached dark/flat/DPC
+            # arrays are keyed on bin number alone, not actual shape, so a crop at
+            # the same bin as a previous full-sensor load would otherwise reuse a
+            # wrong-shaped array and crash downstream in _apply_flat_field/
+            # _subtract_dark. Invalidate and let the next grab reload them to match.
+            grabber.imDark  = 0
+            grabber.imFlat  = 0
+            grabber.imDPC   = 0
+            grabber.current_dark = ""
+            grabber.current_dark_flip = 0
             if target_bin == 2:
                 grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=2)
-                state.zoom_level = min(_zoom_max, state.zoom_level * 2)
                 if was_cropped:
                     # Only restore if we're actually leaving the halved-FOV crop --
-                    # coming from static/accumulate (sentinel 0), fov_ref[0] was
-                    # never touched and is already correct; doubling it here would
-                    # overcorrect.
+                    # coming from static/accumulate (sentinel 0), zoom_level and
+                    # fov_ref[0] were never touched on the way in and are already
+                    # correct; doubling them here would overcorrect (this is the
+                    # "reset point" call from ViewMode.ACCUMULATE -> LIVE).
+                    state.zoom_level = min(_zoom_max, state.zoom_level * 2)
                     fov_ref[0] *= 2
             else:
                 sensor_w = grabber.cam.info.sensor_width_px
@@ -1941,6 +1953,14 @@ def main() -> None:
                 fov_ref[0] *= 2   # leaving the halved-FOV crop; restore the real FOV
             static_bin = cam_config_ref[0].bin
             _stop_and_reset_grab()
+            # Same reasoning as _set_live_bin(): the ROI/shape is changing under
+            # the grabber's feet, so cached calibration arrays must be reloaded
+            # rather than reused at a stale shape.
+            grabber.imDark  = 0
+            grabber.imFlat  = 0
+            grabber.imDPC   = 0
+            grabber.current_dark = ""
+            grabber.current_dark_flip = 0
             grabber.cam.set_roi(x=0, y=0, width=None, height=None, bin=static_bin)
             _live_bin[0] = 0
             _restart_grab()

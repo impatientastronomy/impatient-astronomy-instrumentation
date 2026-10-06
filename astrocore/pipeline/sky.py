@@ -11,6 +11,7 @@ a smooth 2-D background model equivalent to a low-order 2-D polynomial without
 the expense of a full 2-D fit.
 """
 
+import cv2
 import numpy as np
 
 
@@ -18,15 +19,36 @@ def fit_sky_model(
     image: np.ndarray,
     sigma: float = 2.0,
     degree: int = 2,
+    dwn_size: int = 400,
 ) -> np.ndarray:
     """
     Estimate the sky background for a float32 [0, 65535] image.
 
-    image  : shape (H, W) or (H, W, C) — processed per channel
-    sigma  : pixels brighter than mean + sigma*std are treated as stars and clipped
-    degree : polynomial degree for row and column fits (1 = linear, 2 = quadratic)
+    image    : shape (H, W) or (H, W, C) — processed per channel
+    sigma    : pixels brighter than mean + sigma*std are treated as stars and clipped
+    degree   : polynomial degree for row and column fits (1 = linear, 2 = quadratic)
+    dwn_size : if the image's longer side exceeds this, fit on a downsampled
+        copy and upscale the result instead. The sky background is a smooth,
+        low-order surface by construction -- fitting it at full sensor
+        resolution (this runs every accepted stacked frame, on the main
+        thread) wastes cost for no change to the fitted model. Matches the
+        same downsample-then-upscale approach _setup_reference() already
+        uses for its own sky estimate.
     Returns: sky model of the same shape and dtype as image
     """
+    h, w = image.shape[:2]
+    scale = dwn_size / max(h, w)
+    if scale < 1.0:
+        small = cv2.resize(
+            image, (max(1, round(w * scale)), max(1, round(h * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        small_sky = _fit_all_channels(small, sigma, degree)
+        return cv2.resize(small_sky, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    return _fit_all_channels(image, sigma, degree)
+
+
+def _fit_all_channels(image: np.ndarray, sigma: float, degree: int) -> np.ndarray:
     if image.ndim == 3:
         return np.stack(
             [_fit_channel(image[:, :, c], sigma, degree) for c in range(image.shape[2])],

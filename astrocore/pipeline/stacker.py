@@ -317,7 +317,8 @@ class ConstellationStacker:
             self._sky_dirty = False
 
         imPrc = np.clip(imStack - skyco * self._sky_model, 0.0, None)
-        gn    = auto_brightness(imStack, self.gamma, skyco)
+        green = imStack[:, :, 1] if imStack.ndim == 3 else imStack
+        gn    = auto_brightness(green, self.gamma, skyco)
         imPrc = np.clip(gamma_correct(imPrc, self.gamma) * gn, 0.0, 65535.0)
 
         if imPrc.ndim == 3:

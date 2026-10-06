@@ -25,7 +25,7 @@ def saturation_coefficient(t_accum: float) -> float:
     return float(max(1.0, min(2, 2 - np.exp(-(t_accum - 7.0) / 4.0))))
 
 
-def auto_brightness(imdat: np.ndarray, gamma: float, skyco: float) -> float:
+def auto_brightness(imdat: np.ndarray, gamma: float, skyco: float, max_samples: int = 500_000) -> float:
     """
     Compute a brightness gain for a gamma-corrected [0, 65535] image.
 
@@ -35,13 +35,25 @@ def auto_brightness(imdat: np.ndarray, gamma: float, skyco: float) -> float:
 
     imdat  : float32 [0, 65535], pre-gamma stack (before sky subtraction)
     skyco  : sky coefficient — used to estimate the sky-subtracted mean
+    max_samples : median/mean are estimated from a strided subsample once the
+        image exceeds this many pixels, rather than every pixel. np.median in
+        particular requires a sort/selection pass, which is costly at full
+        sensor resolution (this runs every accepted stacked frame, on the
+        main thread) for no real gain in accuracy over a representative
+        subset -- same reasoning as fit_sky_model's downsample.
     Returns: gain to multiply against gamma_correct(imdat, gamma)
     """
     MAX_NOISE_FRAC = 0.07
     MAX_MEAN_FRAC = 0.2
 
-    median_val = float(np.median(imdat))
-    mean_val = float(np.mean(imdat))
+    if imdat.size > max_samples:
+        stride = max(1, int(round((imdat.size / max_samples) ** 0.5)))
+        sample = imdat[::stride, ::stride]
+    else:
+        sample = imdat
+
+    median_val = float(np.median(sample))
+    mean_val = float(np.mean(sample))
 
     # Poisson noise estimate: sqrt(median/4), gamma-compressed
     nval = max(1e-6, ((median_val / 4.0) ** 0.5) ** gamma)

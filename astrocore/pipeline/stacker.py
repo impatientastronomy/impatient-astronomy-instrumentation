@@ -231,8 +231,16 @@ class ConstellationStacker:
 
         registration = self._register_frame(frame)
         if registration is None:
-            self._skipped_count += 1
-            return False
+            # Alignment failed (e.g. too few usable stars) -- add the frame
+            # unaligned rather than discard it. _H_cum is left untouched:
+            # _register_frame() measures shift against the fixed reference
+            # star catalog each call, not relative to the previous frame, so
+            # a later successful registration is unaffected by this skip.
+            self._stack_sum  += img
+            self._frame_count += 1
+            self._t_accum    += exposure_s
+            self._sky_dirty   = True
+            return True
 
         xshift, yshift, rot_deg = registration
         H, W = img.shape[:2]

@@ -162,6 +162,7 @@ class ConstellationStacker:
         self._star_cols: np.ndarray | None = None
         self._rf:        float | None      = None
         self._H_cum:     np.ndarray        = np.eye(3, dtype=np.float64)  # cumulative warpAffine transform (new frame → reference)
+        self._reference_attempted: bool    = False  # see add_frame()
 
     # ── read-only state ───────────────────────────────────────────────────────
 
@@ -193,6 +194,7 @@ class ConstellationStacker:
         self._star_cols     = None
         self._rf            = None
         self._H_cum         = np.eye(3, dtype=np.float64)
+        self._reference_attempted = False
 
     def add_frame(self, frame: np.ndarray, exposure_s: float) -> bool:
         """
@@ -216,7 +218,8 @@ class ConstellationStacker:
             self._frame_count = 1
             self._t_accum     = exposure_s
             self._sky_dirty   = True
-            if exposure_s >= self._min_exp:
+            if exposure_s >= self._min_exp and not self._reference_attempted:
+                self._reference_attempted = True
                 self._setup_reference(frame)
             return True
 
@@ -225,7 +228,8 @@ class ConstellationStacker:
             self._frame_count += 1
             self._t_accum    += exposure_s
             self._sky_dirty   = True
-            if exposure_s >= self._min_exp:
+            if exposure_s >= self._min_exp and not self._reference_attempted:
+                self._reference_attempted = True
                 self._setup_reference(frame)
             return True
 

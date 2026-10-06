@@ -410,11 +410,19 @@ class ConstellationStacker:
         # Select best numstars by weight
         order    = np.argsort(weights)[::-1]
         selected = [i for i in order if weights[i] > 0][:self._numstars]
+        if len(selected) == 0:
+            # Every candidate failed the bounds/mass check above, leaving
+            # weights all zero. np.array([]) defaults to float64 with nothing
+            # to infer an int dtype from, which would crash the indexing
+            # below -- bail out like the n_pos < 3 case and retry on the next
+            # qualifying frame instead.
+            logging.warning("cstl: no usable stars in reference frame; will retry on next frame")
+            return
         if len(selected) < 3:
             logging.warning("cstl: fewer than 3 usable stars; alignment may be unreliable")
 
-        self._star_rows = rows_f[np.array(selected)].copy()
-        self._star_cols = cols_f[np.array(selected)].copy()
+        self._star_rows = rows_f[np.array(selected, dtype=np.int64)].copy()
+        self._star_cols = cols_f[np.array(selected, dtype=np.int64)].copy()
         self._rf        = rf
         logging.debug("cstl: reference set — %d stars tracked (rf=%.2f)", len(selected), rf)
 

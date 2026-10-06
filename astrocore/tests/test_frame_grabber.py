@@ -254,6 +254,21 @@ class TestReset:
         grabber.reset()
         assert camera.read_count == 1
 
+    def test_discards_one_frame_after_reset(self, grabber, camera):
+        # reset() is called right before an ROI/bin reconfigure (e.g. a live
+        # bin switch); the exposure already in flight when it returns may
+        # still reflect the old sensor settings, so the first frame to
+        # complete afterward must be thrown away rather than returned.
+        grabber.reset()
+        camera.set_status(ExposureStatus.SUCCESS)
+        discarded = grabber.grab_frame(dark=False, flat=False, dpc=False, demosaic=False)
+        assert discarded.status == GrabStatus.STARTED
+        assert discarded.frame is None
+
+        camera.set_status(ExposureStatus.SUCCESS)
+        result = grabber.grab_frame(dark=False, flat=False, dpc=False, demosaic=False)
+        assert result.status == GrabStatus.SUCCESS
+
 
 # ---------------------------------------------------------------------------
 # Dark pipeline integration

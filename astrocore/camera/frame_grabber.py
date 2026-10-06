@@ -113,6 +113,7 @@ class FrameGrabber:
         self.current_dark_flip: int = 0  # flip int of the dark file currently in imDark
         self.dark_table: pd.DataFrame = pd.DataFrame()
         self._warned_missing: set[str] = set()  # cal types already warned about this session
+        self._discard_next: bool = False  # set by reset() -- see grab_frame()
 
     @property
     def cam(self) -> Camera:
@@ -199,6 +200,15 @@ class FrameGrabber:
                 return GrabResult(status=GrabStatus.FAILED, message=str(exc))
             self._start_exposure()              # immediately queue next exposure
 
+            if self._discard_next:
+                # This exposure was started before an ROI/bin reconfigure (see
+                # reset()) finished taking effect on the sensor -- its pixel
+                # data and its metadata can briefly disagree on shape (seen as
+                # e.g. bin=1-labeled metadata on a still-bin=2-sized buffer).
+                # Throw it away rather than feed mismatched data downstream.
+                self._discard_next = False
+                return GrabResult(status=GrabStatus.STARTED)
+
             imR = raw_frame.data.copy().astype(np.uint16)
             meta = raw_frame.meta
             cal_ok = True
@@ -233,8 +243,13 @@ class FrameGrabber:
         """
         Abort any in-progress exposure and discard the result.
 
-        Does not clear calibration data (imDark, imFlat, imDPC).
+        Does not clear calibration data (imDark, imFlat, imDPC). Callers use
+        this immediately before reconfiguring the camera's ROI/bin, so the
+        exposure already queued when this returns may complete against the
+        sensor's old settings even after the new ones are applied -- the next
+        successful frame is discarded in grab_frame() to guard against that.
         """
+        self._discard_next = True
         already_done = self._camera.exposure_status == ExposureStatus.SUCCESS
         self._camera.abort()
         if already_done:
